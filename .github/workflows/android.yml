@@ -1,0 +1,29 @@
+name: Build installable Android app
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['android/**', '.github/workflows/android.yml']
+permissions:
+  contents: read
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Prepare Android SDK
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Build and verify signed APK
+        env:
+          SPARNAH_ANDROID_SIGNING: ${{ secrets.SPARNAH_ANDROID_SIGNING }}
+        run: bash android/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Sparnah-Android
+          path: ${{ env.APK_DIST }}
+          retention-days: 30

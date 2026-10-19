@@ -8,7 +8,7 @@
   'use strict';
   const ACCESS_KEY = 'sparnah-private-access-v1';
   const DATA_URL = 'data/private.enc.json';
-  const VERSION = '20261019-alternativen';
+  const VERSION = '20261019-preisvergleich';
   const MAX_BYTES = 40 * 1024 * 1024;
   const object = value => value && typeof value === 'object' && !Array.isArray(value);
   const idValid = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
@@ -212,6 +212,7 @@
     });
     win.SparnahVault = { getData: vault.getData, getStatus: vault.getStatus, refresh: vault.refresh, subscribe: vault.subscribe, lock: vault.lock,
       exportAccess() {
+        if (/SparnahAndroid\//.test(win.navigator?.userAgent || '')) { win.prompt('sparnah-save:sparnah-zugriff.json', vault.exportAccess()); return; }
         const blob = new Blob([vault.exportAccess()], { type: 'application/json' }), url = URL.createObjectURL(blob), link = doc.createElement('a');
         link.href = url; link.download = 'sparnah-zugriff.json'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
       }

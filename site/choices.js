@@ -29,7 +29,7 @@
     if (/^(?:ferrero )?nutella(?:\s|$)/.test(title)) return 'ferrero';
     return brands.find(brand => title === brand || title.startsWith(brand + ' ')) || '';
   }
-  function withoutPack(title) { return title.replace(/\b\d+(?:[.,]\d+)?\s*(?:g|kg|ml|l|stuck|st\.?)(?=\s|$|[,;])/g, '').replace(/\s+/g, ' ').trim(); }
+  function withoutPack(title) { return title.replace(/\b(?:\d+\s*[x×]\s*)?\d+(?:[.,]\d+)?\s*(?:g|kg|ml|l|stuck|st\.?)(?=\s|$|[,;])/g, '').replace(/\s+/g, ' ').trim(); }
   function withoutBrand(product, brands) {
     let title = withoutPack(normalize(product.title));
     const brand = brandOf(product, brands);
@@ -90,8 +90,9 @@
     return {kind: 'same-product', group: `choice:same:${key(brand)}:${key(title)}:${packKey(product.pack)}:${dietaryKey(product)}`, description: `Günstigster erfasster Preis derselben Marke und Produktausführung · ${packLabel(product.pack)}.`};
   }
   function alternativeProfile(product, brands) {
-    if (!packKey(product.pack) || product.pack.unit !== 'g') return null;
-    const title = withoutBrand(product, brands).replace(/[,-]+/g,' ').replace(/\s+/g,' ').trim();
+    if (!packKey(product.pack) || !['g','ml'].includes(product.pack.unit)) return null;
+    const title = withoutBrand(product, brands).replace(/(\d),(\d)/g,'$1.$2').replace(/[,-]+/g,' ').replace(/\s+/g,' ').trim();
+    if (/\b(?:oder|verschiedene|sortiment)\b|\//.test(title)) return null;
     let family=null,label=null;
     // Only the spread itself: the brand also sells biscuits, ice cream and snacks.
     if (/^(?:ferrero )?nutella(?: classic| klassisch)?$/.test(title) || /^(?:bio )?(?:nuss nougat ?creme|nuss nugat ?creme|haselnuss nougat ?creme)$/.test(title)) {
@@ -102,8 +103,44 @@
     const rice=title.match(/^(?:bio )?(basmati(?:reis| reis)|jasmin(?:reis| reis)|parboiled reis|langkornreis|vollkornreis)$/);
     if(pasta){family='pasta:'+pasta[1];label=pasta[1];}
     if(rice){family='rice:'+rice[1].replace(/ /g,'');label=rice[1];}
+    // Full-title rules prevent ingredients and prepared meals from matching a staple.
+    // Unknown qualifiers remain unmatched instead of being silently discarded.
+    const plain=title.replace(/^bio /,'');
+    const rules=product.pack.unit==='g'?[
+      [/^(?:qualitats )?(weizenmehl|dinkelmehl|roggenmehl) (?:type ?)?(\d{3,4})$/, m=>'flour:'+m[1]+':'+m[2]],
+      [/^(weizen|dinkel|roggen)(?:vollkornmehl|mehl vollkorn)$/, m=>'flour:'+m[1]+':wholegrain'],
+      [/^(puderzucker|wurfelzucker|kristallzucker|raffinade|feinster zucker)$/, m=>'sugar:'+(/raffinade|feinster/.test(m[1])?'kristallzucker':m[1])],
+      [/^(?:haferflocken (zart|kernig|feinblatt|grossblatt)|(zarte|kernige) haferflocken)$/, m=>'oats:'+(/zart|feinblatt/.test(m[1]||m[2])?'fine':'coarse')],
+      [/^(?:passierte tomaten|tomaten passiert|passata(?: di pomodoro)?)$/, ()=>'tomatoes:strained'],
+      [/^(?:gehackte tomaten|tomaten gehackt|stuckige tomaten|tomatenstucke)$/, ()=>'tomatoes:chopped'],
+      [/^(?:joghurt )?(\d+(?:\.\d+)?)\s*% fett (?:milder )?naturjoghurt$|^(?:milder )?naturjoghurt (\d+(?:\.\d+)?)\s*%(?: fett)?$/, m=>'yogurt:natural:'+Number(m[1]||m[2])],
+      [/^(speisequark|magerquark|skyr natur|butterschmalz|speisestarke|backpulver|tomatenmark|rote linsen|braune linsen|kichererbsen getrocknet|bulgur|couscous)$/, m=>'staple:'+m[1]],
+      [/^(speisequark) (\d+)\s*% fett i\.\s*tr\.?$/, m=>'quark:'+m[2]],
+      [/^(?:gemahlener kaffee|kaffee gemahlen|filterkaffee|mahlkaffee)(?: (mild|intenso|entkoffeiniert))?$/, m=>'coffee:ground:'+(m[1]||'ordinary')],
+      [/^(?:kaffeebohnen|kaffee ganze bohne|ganze bohne)(?: (espresso|crema|entkoffeiniert))?$/, m=>'coffee:beans:'+(m[1]||'ordinary')],
+    ]:[
+      [/^tomaten ?ketchup$/, ()=>'ketchup:tomato'],
+      [/^(sonnenblumenol|rapsol|olivenol)(?: (nativ extra|nativ|kaltgepresst|raffiniert))?$/, m=>'oil:'+m[1]+':'+(m[2]||'unspecified')],
+      [/^(?:naturliches )?mineralwasser (classic|klassik|medium|naturell|still)$/, m=>'water:'+({classic:'sparkling',klassik:'sparkling',naturell:'still'}[m[1]]||m[1])],
+      [/^(apfelsaft|orangensaft|traubensaft)(?: (direktsaft|aus konzentrat|naturtrub|klar))?$/, m=>'juice:'+m[1]+':'+(m[2]||'unspecified')],
+      [/^(haferdrink|sojadrink|mandeldrink)(?: (natur|ungesusst|ohne zucker|barista))?$/, m=>'plantdrink:'+m[1]+':'+(m[2]||'unspecified')],
+      [/^(apfelessig|weissweinessig|rotweinessig)$/, m=>'vinegar:'+m[1]],
+    ];
+    for(const [pattern,identify] of rules){const m=plain.match(pattern);if(m){family=identify(m);label=plain;break;}}
+    // Identical concrete food descriptions also work across brands, retaining all
+    // qualifiers. Generic marketing names (Classic, Gold, etc.) never form a group.
+    if(!family && /^(?:erdnussbutter|erdnussmus|mandelmus|erdbeerkonfiture|aprikosenkonfiture|honig|gouda|emmentaler|mozzarella|feta|frischkase|tiefkuhl erbsen|tiefkuhl blattspinat)(?: (?:natur|cremig|stuckig|mild|gerieben|in scheiben|doppelrahmstufe))*$/.test(plain) && product.pack.unit==='g'){
+      family='food:'+plain;label=plain;
+    }
+    // The entire remaining food description is the key, including cultivar,
+    // flavour and preparation. This general rule is not tied to a named brand.
+    if(!family && product.pack.unit==='g' && /\b(?:apfel|tafelapfel|bananen|birnen|kartoffeln|karotten|mohren|zwiebeln|paprika|gurken|zucchini|brokkoli|blumenkohl|champignons|erdbeeren|himbeeren|heidelbeeren|walnusskerne|mandeln|cashewkerne|sonnenblumenkerne|rosinen|sultaninen|kidneybohnen|kichererbsen|linsen|erbsen|blattspinat|rahmspinat|pommes frites|gouda|emmentaler|mozzarella|feta|frischkase|cottage cheese|kochschinken|hahnchenbrustfilet|putenbrustfilet|schweineschnitzel|rinderhackfleisch|schweinehackfleisch|lachsfilet|seelachsfilet|fischstabchen|pizza salami|pizza margherita|pizzateig|blatterteig|toastbrot|vollkorntoast|knackebrot|zwieback|honig|erdbeerkonfiture|aprikosenkonfiture|erdnussbutter|erdnussmus|mandelmus)\b/.test(plain) && !/\b(?:sorten|gemischt|mischung)\b/.test(plain)){
+      family='description:'+plain;label=plain;
+    }
+    if(family && /^(?:hazelnut|pasta:|rice:)/.test(family) && product.pack.unit!=='g')return null;
     if(!family)return null;
-    return {kind:'alternative',group:`choice:alternative:${family}:${product.pack.unit}:${dietaryKey(product)}`,description:`${label} verschiedener Marken, einschließlich Eigenmarken: günstigster Kilopreis. Ähnliche Packungen (bis zu 20 % kleiner oder größer als ${packLabel(product.pack)}), gleiche Anzahl Packungen. Tatsächliche Größe, Kilopreis und Kassenbetrag werden angezeigt; besondere Ernährungsangaben bleiben erhalten.`};
+    const basis=product.pack.unit==='ml'?'Literpreis':'Kilopreis';
+    return {kind:'alternative',group:`choice:alternative:${family}:${product.pack.unit}:${dietaryKey(product)}`,description:`${label} verschiedener Marken, einschließlich Eigenmarken: günstigster ${basis}. Ähnliche Packungen (bis zu 20 % kleiner oder größer als ${packLabel(product.pack)}), gleiche Anzahl Packungen. Tatsächliche Größe, ${basis} und Kassenbetrag werden angezeigt; besondere Ernährungsangaben bleiben erhalten.`};
   }
   function profiles(product, brands) {
     if (!product || product.packUnconfirmed || !packKey(product.pack)) return [];

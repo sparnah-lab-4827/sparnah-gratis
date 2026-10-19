@@ -6,7 +6,7 @@
 })(typeof globalThis!=='undefined'?globalThis:this,function(){
   'use strict';
   function create(win){
-    let pending=null,busy=false,installed=!!(win.matchMedia?.('(display-mode: standalone)').matches||win.navigator?.standalone);
+    let pending=null,busy=false,installed=!!(win.matchMedia?.('(display-mode: standalone)').matches||win.navigator?.standalone||/SparnahAndroid\//.test(win.navigator?.userAgent||''));
     const listeners=new Set();
     const notify=()=>{for(const fn of listeners)fn({installed,available:!!pending});};
     win.addEventListener('beforeinstallprompt',event=>{event.preventDefault();pending=event;notify();});

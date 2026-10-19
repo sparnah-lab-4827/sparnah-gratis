@@ -164,6 +164,21 @@
     }
     const result = solve(maxStores), one = maxStores === 1 ? result : solve(1);
     const known = result.lines.filter(Boolean);
+    // Savings against the saved product require a real price in the same shop
+    // on the planned day. Never use an old price, another shop or a guessed RRP.
+    for (const line of known) {
+      const wish=line.item.requestedProduct, have=line.offer.pack;
+      if(!wish || wish.groupId===line.item.product.groupId || !have || !wish.pack ||
+        !['g','ml'].includes(have.unit) || have.unit!==wish.pack.unit || have.min!==have.max || have.min<=0 ||
+        wish.pack.min!==wish.pack.max || wish.pack.min<=0) continue;
+      const original=eligible.filter(o=>o.storeId===line.storeId && validOn(o,line.day) && offerUsable(o,line.item.qty) &&
+        !o.packUnconfirmed && o.pack?.min===o.pack?.max && o.pack?.min>0 &&
+        (o.productId===wish.id || wish.variantId) && ['exact','group'].includes(match(wish,o).status))
+        .sort((a,b)=>a.priceCents/a.pack.min-b.priceCents/b.pack.min)[0];
+      if(!original || original.priceCents<=0)continue;
+      const before=original.priceCents/original.pack.min,after=line.offer.priceCents/have.min;
+      if(after<before)line.unitSaving={originalOffer:original,percent:100*(before-after)/before};
+    }
     const visitMap = new Map();
     for (const line of known) {
       if (!visitMap.has(line.storeId)) visitMap.set(line.storeId, { store: stores.find(s => s.id === line.storeId), day: line.day, lines: [], unpriced: [], total: 0, deposit: 0 });
@@ -200,6 +215,7 @@
       visits, usedCount: visits.length, dayCount: visitDays.length,
       latest: visitDays[visitDays.length - 1] || result.latest, dayKey: visitDays.join(','),
       referenceSavings, referenceCount: referenced.length,
+      cheaperAlternativeCount: known.filter(l=>l.unitSaving).length,
       oneStore: { coverage: one.coverage, total: one.total, complete: one.coverage === active.length },
       unitComparisons,
       extraStoreSavings: !unitComparisons && complete && one.coverage === active.length ? one.total - result.total : null,
