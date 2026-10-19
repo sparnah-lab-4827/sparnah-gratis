@@ -1,0 +1,16 @@
+# Secrets, decrypted data, local backups and temporary logs stay outside Git.
+*.key
+*.pem
+*.log
+*.bundle
+*.zip
+*.py[cod]
+__pycache__/
+.env*
+*access*.json
+sparnah-sicherung-*.json
+private-vault/
+_private/
+work/
+outputs/
+.DS_Store

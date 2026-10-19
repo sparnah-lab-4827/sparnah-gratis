@@ -1,0 +1,61 @@
+name: Sparnah encrypted refresh and publish
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '17 5,17 * * *'
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: sparnah-pages
+  cancel-in-progress: false
+
+jobs:
+  refresh-and-publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install encryption dependency
+        run: python -m pip install cryptography==50.0.2
+      - name: Verify public pipeline and application
+        run: |
+          python -m unittest discover -s tests -p 'pipeline*.py'
+          node --test tests/*.test.cjs
+      - name: Refresh private sources without publishing logs
+        env:
+          SPARNAH_RUNTIME_KEY: ${{ secrets.SPARNAH_RUNTIME_KEY }}
+          SPARNAH_DATA_KEY: ${{ secrets.SPARNAH_DATA_KEY }}
+        run: python scripts/private_pipeline.py refresh
+      - name: Save encrypted state only
+        run: |
+          git config user.name 'sparnah-update-bot'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add protected/runtime.enc.json site/data/private.enc.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Refresh encrypted application data'
+            git push
+          fi
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - name: Publish application
+        id: deployment
+        uses: actions/deploy-pages@v4
