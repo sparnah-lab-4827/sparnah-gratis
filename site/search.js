@@ -5,15 +5,34 @@
   function build(...pools){
     const byId=new Map();
     for(const pool of pools)for(const p of pool||[])if(p&&typeof p.id==='string'&&!byId.has(p.id))byId.set(p.id,p);
-    const rows=[...byId.values()].sort((a,b)=>Number(!!b.isGroupChoice)-Number(!!a.isGroupChoice)).map(p=>({p,text:normalize([p.title,p.subtitle,p.brand,p.category,p.keywords,p.line,...(Array.isArray(p.aliases)?p.aliases:[]),p.pack?`${p.pack.min} ${p.pack.max} ${p.pack.unit}`:''].join(' '))}));
-    for(const row of rows)row.words=new Set(row.text.split(' '));
+    const rows=[...byId.values()].sort((a,b)=>Number(!!b.isGroupChoice)-Number(!!a.isGroupChoice)).map((p,order)=>{
+      const pack=p.pack?`${p.pack.min} ${p.pack.max} ${p.pack.unit}`:'';
+      const title=normalize(p.title),primary=normalize([p.title,p.brand,p.line,...(Array.isArray(p.aliases)?p.aliases:[]),pack].join(' '));
+      // Imported keywords may repeat a department such as "Milk & Eggs". A department
+      // is a filter, not evidence that every product in it contains the searched food.
+      const category=normalize(p.category),keywords=normalize(p.keywords);
+      const cleanedKeywords=category?keywords.split(category).join(' '):keywords;
+      const text=normalize([primary,p.subtitle,cleanedKeywords].join(' '));
+      const generic=!!(!p.variantId&&!p.brand&&p.groupId&&!/^(?:assortment|import|manufacturer|custom):/.test(p.id));
+      const general=!!(p.isGroupChoice||p.groupSelection||generic);
+      return {p,order,title,primary,text,generic,general,words:new Set(text.split(' ')),primaryWords:new Set(primary.split(' ')),titleWords:new Set(title.split(' '))};
+    });
     const brands=[...new Set(rows.map(r=>r.p.brand).filter(Boolean))];
     return {byId,products:[...byId.values()],brands,brandRows:brands.map(name=>({name,key:brandKey(name)})).sort((a,b)=>b.key.length-a.key.length),rows,categories:[...new Set(rows.map(r=>r.p.category).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'de'))};
   }
   function search(index,query,{store='all',category='all',limit=24}={}){
     const terms=normalize(query).split(' ').filter(Boolean),found=[];
-    for(const row of index.rows)if((store==='all'||row.p.assortmentStoreId===store)&&(category==='all'||row.p.category===category)&&terms.every(t=>/^\d+$/.test(t)?row.words.has(t):row.text.includes(t)))found.push(row.p);
-    return {total:found.length,items:found.slice(0,Math.max(1,limit))};
+    const matches=(text,words)=>terms.every(t=>/^\d+$/.test(t)?words.has(t):text.includes(t));
+    for(const row of index.rows)if((store==='all'||row.p.assortmentStoreId===store)&&(category==='all'||row.p.category===category)&&matches(row.text,row.words)){
+      const direct=matches(row.primary,row.primaryWords);
+      const titleHits=terms.reduce((score,t)=>score+Math.max(0,...[...row.titleWords].map(w=>w===t?4:w.startsWith(t)?3:w.endsWith(t)?2:w.includes(t)?1:0)),0);
+      const exactPack=!!(row.p.pack&&row.p.pack.min===row.p.pack.max&&terms.includes(String(row.p.pack.min)));
+      found.push({row,tier:direct?(row.generic?0:row.general?1:2):3,titleHits,exactPack});
+    }
+    // Rank before pagination, so a general wish cannot disappear behind a large catalogue.
+    // A brand/variant query still needs its own match; unrelated broad wishes never get pinned.
+    if(terms.length)found.sort((a,b)=>a.tier-b.tier||Number(b.exactPack)-Number(a.exactPack)||b.titleHits-a.titleHits||a.row.order-b.row.order);
+    return {total:found.length,items:found.slice(0,Math.max(1,limit)).map(hit=>hit.row.p)};
   }
   function restoreProduct(item,index){
     const p=item?.product;
