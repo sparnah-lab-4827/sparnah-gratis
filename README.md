@@ -20,7 +20,7 @@ Die private Datensammlung wird mit einer separat bereitgestellten Zugangsdatei a
 
 Eine leere Liste bietet **Mit passenden Preisen ausprobieren**. Dabei werden ausschließlich Beispielprodukte mit bestätigten Preisen für die gewählten Märkte, Woche und Ladenbegrenzung eingefügt. Allgemeine Wünsche wie Äpfel oder Nudeln erkennen passende frische beziehungsweise einfache Produkte mit derselben Packung; bestimmte Marken, Sorten und abweichende Größen bleiben getrennt.
 
-Beim Wiederöffnen erscheint der zuletzt authentifizierte lokale Datenstand sofort. Neue Daten werden im Hintergrund geprüft. Alte Preise und Prospekte behalten ihre ursprünglichen Gültigkeitsdaten.
+Beim Wiederöffnen erscheint der zuletzt authentifizierte lokale Datenstand sofort. Neue Daten werden bei jedem Start sowie beim Wiederöffnen und Wiederverbinden im Hintergrund geprüft. Angebote, Prospekte und Quellenmeldungen richten sich nach den ausgewählten Märkten. Neue Märkte werden nicht automatisch aktiviert. Die gemeinsame verschlüsselte Datendatei enthält weiterhin den zentralen Datenstand; die persönliche Marktauswahl wird nicht an GitHub gesendet. Alte Preise und Prospekte behalten ihre ursprünglichen Gültigkeitsdaten.
 
 Auswahl und Listen werden nicht zwischen Geräten synchronisiert. Für ein zusätzliches Gerät wird die Zugangsdatei erneut benötigt. Sicherungen und die Zugangsdatei müssen getrennt aufbewahrt werden.
 

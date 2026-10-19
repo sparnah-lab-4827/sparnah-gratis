@@ -1,7 +1,7 @@
 /* Offline shell only. Authenticated ciphertext is stored by vault.js in IndexedDB. */
-const CACHE='sparnah-free-shell-v19-suche';
-const VERSION='20261019-suche';
-const FILES=['index.html','styles.css','engine.js','search.js','leaflets.js','choices.js','selection.js','vault.js','install.js','app.js','manifest.webmanifest','icon.svg','icon-192.png','icon-512.png'];
+const CACHE='sparnah-free-shell-v21-auto';
+const VERSION='20261019-auto';
+const FILES=['index.html','styles.css','engine.js','search.js','leaflets.js','choices.js','selection.js','vault.js','install.js','updates.js','app.js','manifest.webmanifest','icon.svg','icon-192.png','icon-512.png'];
 const ASSETS=['./',...FILES.map(path=>/\.(js|css)$/.test(path)?path+'?v='+VERSION:path)];
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(ASSETS)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(key=>key.startsWith('sparnah-')&&key!==CACHE).map(key=>caches.delete(key)))).then(()=>self.clients.claim())));
