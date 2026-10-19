@@ -1,6 +1,7 @@
 """Generic encryption and isolation tests; no production data or keys are fixtures."""
 import base64
 import contextlib
+import gzip
 import io
 import json
 import os
@@ -70,10 +71,11 @@ class PipelineTests(unittest.TestCase):
         plain = P.json_bytes(self.payload)
         first = P.encrypt_bytes(plain, self.data_key, self.dataset, 'data')
         second = P.encrypt_bytes(plain, self.data_key, self.dataset, 'data')
-        self.assertEqual(set(first), {'schemaVersion', 'algorithm', 'datasetId', 'iv', 'ciphertext'})
+        self.assertEqual(set(first), {'schemaVersion', 'algorithm', 'datasetId', 'iv', 'ciphertext', 'compression'})
         self.assertEqual(first['algorithm'], 'AES-256-GCM')
+        self.assertEqual(first['compression'], 'gzip')
         self.assertEqual(len(P.b64decode(first['iv'])), 12)
-        self.assertEqual(len(P.b64decode(first['ciphertext'])), len(plain) + 16)
+        self.assertEqual(len(P.b64decode(first['ciphertext'])), len(gzip.compress(plain,compresslevel=9,mtime=0)) + 16)
         self.assertNotEqual(first['iv'], second['iv'])
         self.assertEqual(P.decrypt_bytes(first, self.data_key, 'data'), plain)
         self.assertEqual(first['datasetId'], self.dataset)
@@ -84,11 +86,35 @@ class PipelineTests(unittest.TestCase):
 process.stdin.on('data',x=>input+=x);process.stdin.on('end',async()=>{
  const {envelope:e,key:k}=JSON.parse(input);
  const key=await webcrypto.subtle.importKey('raw',Buffer.from(k,'base64url'),{name:'AES-GCM'},false,['decrypt']);
- const plain=await webcrypto.subtle.decrypt({name:'AES-GCM',iv:Buffer.from(e.iv,'base64url'),additionalData:Buffer.from('sparnah-vault:v1:'+e.datasetId),tagLength:128},key,Buffer.from(e.ciphertext,'base64url'));
- process.stdout.write(Buffer.from(plain));});"""
+ const compressed=await webcrypto.subtle.decrypt({name:'AES-GCM',iv:Buffer.from(e.iv,'base64url'),additionalData:Buffer.from('sparnah-vault:v1:'+e.datasetId),tagLength:128},key,Buffer.from(e.ciphertext,'base64url'));
+ const stream=new Blob([compressed]).stream().pipeThrough(new DecompressionStream('gzip'));
+ const plain=await new Response(stream).arrayBuffer();process.stdout.write(Buffer.from(plain));});"""
         result = subprocess.run(['node', '-e', code], input=json.dumps({'envelope': envelope, 'key': P.b64encode(self.data_key)}),
                                 text=True, capture_output=True, check=True)
         self.assertEqual(json.loads(result.stdout), self.payload)
+
+    def test_legacy_plain_envelope_is_supported_and_runtime_stays_uncompressed(self):
+        plain=P.json_bytes(self.payload);iv=secrets.token_bytes(12)
+        cipher=P.AESGCM(self.data_key).encrypt(iv,plain,('sparnah-vault:v1:'+self.dataset).encode())
+        legacy={'schemaVersion':1,'algorithm':'AES-256-GCM','datasetId':self.dataset,'iv':P.b64encode(iv),'ciphertext':P.b64encode(cipher)}
+        self.assertEqual(P.decrypt_bytes(legacy,self.data_key,'data'),plain)
+        runtime=P.encrypt_bytes(b'zip-content',self.runtime_key,self.dataset,'runtime')
+        self.assertNotIn('compression',runtime)
+        self.assertEqual(P.decrypt_bytes(runtime,self.runtime_key,'runtime'),b'zip-content')
+        for invalid in ('deflate','',None,True):
+            with self.subTest(compression=invalid),self.assertRaises(P.PipelineError):
+                P.decrypt_bytes({**legacy,'compression':invalid},self.data_key,'data')
+        with self.assertRaises(P.PipelineError):P.decrypt_bytes({**runtime,'compression':'gzip'},self.runtime_key,'runtime')
+
+    def test_decompression_limit_and_invalid_gzip_fail_without_publishing_plaintext(self):
+        large=P.encrypt_bytes(b'x'*8192,self.data_key,self.dataset,'data')
+        self.assertLess(len(P.b64decode(large['ciphertext'])),1024)
+        with patch.object(P,'MAX_EXPANDED_BYTES',1024),self.assertRaises(P.PipelineError):
+            P.decrypt_bytes(large,self.data_key,'data')
+        iv=secrets.token_bytes(12)
+        cipher=P.AESGCM(self.data_key).encrypt(iv,b'not-gzip',('sparnah-vault:v1:'+self.dataset).encode())
+        malformed={'schemaVersion':1,'algorithm':'AES-256-GCM','datasetId':self.dataset,'iv':P.b64encode(iv),'ciphertext':P.b64encode(cipher),'compression':'gzip'}
+        with self.assertRaises(P.PipelineError):P.decrypt_bytes(malformed,self.data_key,'data')
 
     def test_wrong_key_wrong_purpose_tampering_and_rebound_dataset_fail(self):
         envelope = P.encrypt_bytes(b'private-data', self.data_key, self.dataset, 'data')

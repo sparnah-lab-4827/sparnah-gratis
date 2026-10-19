@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import gzip
 import io
 import json
 import os
@@ -95,25 +96,40 @@ def json_bytes(value):
 
 def encrypt_bytes(plain, key, dataset_id, kind):
     validate_dataset_id(dataset_id)
-    if kind not in AAD_PREFIX or len(key) != 32:
+    if kind not in AAD_PREFIX or len(key) != 32 or len(plain) > MAX_EXPANDED_BYTES:
+        raise PipelineError('encryption')
+    content = gzip.compress(plain, compresslevel=9, mtime=0) if kind == 'data' else plain
+    if len(content) > MAX_EXPANDED_BYTES:
         raise PipelineError('encryption')
     iv = secrets.token_bytes(12)
-    cipher = AESGCM(key).encrypt(iv, plain, (AAD_PREFIX[kind] + dataset_id).encode('utf8'))
-    return {'schemaVersion': SCHEMA, 'algorithm': ALGORITHM, 'datasetId': dataset_id,
-            'iv': b64encode(iv), 'ciphertext': b64encode(cipher)}
+    cipher = AESGCM(key).encrypt(iv, content, (AAD_PREFIX[kind] + dataset_id).encode('utf8'))
+    envelope = {'schemaVersion': SCHEMA, 'algorithm': ALGORITHM, 'datasetId': dataset_id,
+                'iv': b64encode(iv), 'ciphertext': b64encode(cipher)}
+    if kind == 'data':
+        envelope['compression'] = 'gzip'
+    return envelope
 
 
 def decrypt_bytes(envelope, key, kind):
     try:
-        if kind not in AAD_PREFIX or set(envelope) != {'schemaVersion', 'algorithm', 'datasetId', 'iv', 'ciphertext'}:
+        fields = {'schemaVersion', 'algorithm', 'datasetId', 'iv', 'ciphertext'}
+        if kind not in AAD_PREFIX or set(envelope) not in (fields, fields | {'compression'}):
+            raise ValueError()
+        if 'compression' in envelope and (kind != 'data' or envelope['compression'] != 'gzip'):
             raise ValueError()
         if envelope['schemaVersion'] != SCHEMA or envelope['algorithm'] != ALGORITHM:
             raise ValueError()
         dataset = validate_dataset_id(envelope['datasetId'])
         iv, cipher = b64decode(envelope['iv']), b64decode(envelope['ciphertext'])
-        if len(iv) != 12 or len(cipher) < 16 or len(cipher) > MAX_EXPANDED_BYTES:
+        if len(iv) != 12 or len(cipher) < 16 or len(cipher) > MAX_EXPANDED_BYTES + 16:
             raise ValueError()
-        return AESGCM(key).decrypt(iv, cipher, (AAD_PREFIX[kind] + dataset).encode('utf8'))
+        content = AESGCM(key).decrypt(iv, cipher, (AAD_PREFIX[kind] + dataset).encode('utf8'))
+        if envelope.get('compression') == 'gzip':
+            with gzip.GzipFile(fileobj=io.BytesIO(content), mode='rb') as zipped:
+                content = zipped.read(MAX_EXPANDED_BYTES + 1)
+            if len(content) > MAX_EXPANDED_BYTES:
+                raise ValueError()
+        return content
     except Exception:
         raise PipelineError('decryption') from None
 

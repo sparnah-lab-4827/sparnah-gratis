@@ -8,7 +8,7 @@
   'use strict';
   const ACCESS_KEY = 'sparnah-private-access-v1';
   const DATA_URL = 'data/private.enc.json';
-  const VERSION = '20261019-private-daten';
+  const VERSION = '20261019-private-daten2';
   const MAX_BYTES = 40 * 1024 * 1024;
   const object = value => value && typeof value === 'object' && !Array.isArray(value);
   const idValid = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
@@ -30,9 +30,25 @@
     if (!object(data) || data.schemaVersion !== 1 || !object(data.catalog) || data.catalog.version !== 2 || !['stores', 'products', 'offers'].every(k => Array.isArray(data.catalog[k])) || !object(data.assortment) || !Array.isArray(data.assortment.products) || !object(data.assortment.sources) || !object(data.leaflets) || !Array.isArray(data.leaflets.leaflets) || !object(data.status)) throw new Error('Der private Datenbestand hat ein ungültiges Format.');
     return data;
   }
+  async function decompressGzip(plaintext) {
+    const reader = new Blob([plaintext]).stream().pipeThrough(new DecompressionStream('gzip')).getReader();
+    const chunks = []; let size = 0;
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > MAX_BYTES) { await reader.cancel(); throw new Error('Der Datenbestand ist zu groß.'); }
+        chunks.push(value);
+      }
+      const result = new Uint8Array(size); let offset = 0;
+      for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength; }
+      return result;
+    } finally { for (const chunk of chunks) chunk.fill(0); reader.releaseLock(); }
+  }
   async function decryptEnvelope(envelope, accessValue, cryptoApi = globalThis.crypto) {
     const access = parseAccess(accessValue);
-    if (!object(envelope) || envelope.schemaVersion !== 1 || envelope.algorithm !== 'AES-256-GCM' || envelope.datasetId !== access.datasetId || !idValid(envelope.datasetId) || typeof envelope.iv !== 'string' || envelope.iv.length !== 16 || typeof envelope.ciphertext !== 'string' || envelope.ciphertext.length > MAX_BYTES || envelope.ciphertext.length < 23) throw new Error('Zugriffsdatei und Datenbestand passen nicht zusammen.');
+    if (!object(envelope) || envelope.schemaVersion !== 1 || envelope.algorithm !== 'AES-256-GCM' || (envelope.compression !== undefined && envelope.compression !== 'gzip') || envelope.datasetId !== access.datasetId || !idValid(envelope.datasetId) || typeof envelope.iv !== 'string' || envelope.iv.length !== 16 || typeof envelope.ciphertext !== 'string' || envelope.ciphertext.length > MAX_BYTES || envelope.ciphertext.length < 23) throw new Error('Zugriffsdatei und Datenbestand passen nicht zusammen.');
     const iv = bytes(envelope.iv), ciphertext = bytes(envelope.ciphertext);
     if (iv.length !== 12 || ciphertext.length < 17 || !cryptoApi?.subtle) throw new Error('Dieser Browser unterstützt die sichere Freigabe nicht. Bitte HTTPS und einen aktuellen Browser verwenden.');
     let plaintext;
@@ -40,9 +56,14 @@
       const key = await cryptoApi.subtle.importKey('raw', bytes(access.key), { name: 'AES-GCM' }, false, ['decrypt']);
       plaintext = await cryptoApi.subtle.decrypt({ name: 'AES-GCM', iv, additionalData: new TextEncoder().encode('sparnah-vault:v1:' + access.datasetId), tagLength: 128 }, key, ciphertext);
     } catch { throw new Error('Die Daten konnten nicht sicher geöffnet werden. Bitte die passende Zugriffsdatei verwenden oder erneut versuchen.'); }
-    try { return validateBundle(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(plaintext))); }
+    let decoded = new Uint8Array(plaintext);
+    try {
+      if (envelope.compression === 'gzip') decoded = await decompressGzip(plaintext);
+      if (decoded.byteLength > MAX_BYTES) throw new Error('Der Datenbestand ist zu groß.');
+      return validateBundle(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(decoded)));
+    }
     catch { throw new Error('Der private Datenbestand hat ein ungültiges Format.'); }
-    finally { new Uint8Array(plaintext).fill(0); }
+    finally { decoded.fill(0); new Uint8Array(plaintext).fill(0); }
   }
   function createVault(deps) {
     let access = null, data = null, inFlight = null, startInFlight = null, lastRefresh = 0, generation = 0, started = false;
@@ -152,7 +173,7 @@
     const storage = { getItem: key => win.localStorage.getItem(key), setItem: (key, value) => win.localStorage.setItem(key, value), removeItem: key => win.localStorage.removeItem(key) };
     const vault = createVault({ storage, cache: indexedCache(win), crypto: win.crypto,
       async fetchEnvelope() {
-        const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 20000);
+        const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 90000);
         try {
           const response = await win.fetch(DATA_URL, { cache: 'no-store', credentials: 'omit', referrerPolicy: 'no-referrer', signal: controller.signal });
           if (!response.ok || Number(response.headers.get('content-length')) > MAX_BYTES) throw new Error('Daten nicht erreichbar.');

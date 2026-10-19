@@ -1,6 +1,7 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const {webcrypto}=require('node:crypto');
+const {gzipSync}=require('node:zlib');
 const fs=require('node:fs');
 const vm=require('node:vm');
 const path=require('node:path');
@@ -12,8 +13,9 @@ async function encrypted(data=bundle(),options={}){
   const access={format:'sparnah-access-v1',datasetId:'test-dataset',key:encode(raw)};
   const iv=webcrypto.getRandomValues(new Uint8Array(12));
   const key=await webcrypto.subtle.importKey('raw',raw,'AES-GCM',false,['encrypt']);
-  const ciphertext=await webcrypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:new TextEncoder().encode(options.aad||'sparnah-vault:v1:'+access.datasetId),tagLength:128},key,new TextEncoder().encode(JSON.stringify(data)));
-  return {access,envelope:{schemaVersion:1,algorithm:'AES-256-GCM',datasetId:access.datasetId,iv:encode(iv),ciphertext:encode(ciphertext)}};
+  const plaintext=new TextEncoder().encode(JSON.stringify(data));
+  const ciphertext=await webcrypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:new TextEncoder().encode(options.aad||'sparnah-vault:v1:'+access.datasetId),tagLength:128},key,options.compression==='gzip'?gzipSync(plaintext):plaintext);
+  return {access,envelope:{schemaVersion:1,algorithm:'AES-256-GCM',datasetId:access.datasetId,iv:encode(iv),ciphertext:encode(ciphertext),...(options.compression?{compression:options.compression}:{})}};
 }
 function setup(fixture,initial={}){
   const values=new Map(Object.entries(initial)),writes=[],cached=new Map(),received=[];
@@ -24,6 +26,21 @@ function setup(fixture,initial={}){
 }
 test('decrypts real AES-256-GCM with the exact Python-compatible AAD and concatenated tag',async()=>{
   const {access,envelope}=await encrypted();assert.deepEqual(await V.decryptEnvelope(envelope,access,webcrypto),bundle());
+});
+test('decrypts gzip using the real DecompressionStream and retains legacy compatibility',async()=>{
+  assert.equal(typeof DecompressionStream,'function');
+  for(const compression of [undefined,'gzip']){
+    const {access,envelope}=await encrypted(bundle(),{compression});assert.deepEqual(await V.decryptEnvelope(envelope,access,webcrypto),bundle());
+  }
+});
+test('rejects unknown compression and authenticated bytes that are not valid gzip',async()=>{
+  const {access,envelope}=await encrypted();
+  for(const compression of ['brotli','none',null,'gzip'])await assert.rejects(V.decryptEnvelope({...envelope,compression},access,webcrypto));
+});
+test('gzip output is stopped at the 40 MiB decoded size limit',async()=>{
+  const data=bundle();data.oversized='x'.repeat(40*1024*1024);
+  const {access,envelope}=await encrypted(data,{compression:'gzip'});
+  await assert.rejects(V.decryptEnvelope(envelope,access,webcrypto));
 });
 test('rejects wrong keys, wrong dataset, altered IV, ciphertext and authenticated metadata',async()=>{
   const {access,envelope}=await encrypted();
