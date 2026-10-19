@@ -83,10 +83,35 @@ test('wrong key never replaces a saved key or starts the app',async()=>{
 test('restores with saved access and decrypts cached ciphertext offline; expired dates stay unchanged',async()=>{
   const fixture=await encrypted(),s=setup(fixture,{[V.ACCESS_KEY]:JSON.stringify(fixture.access)});
   s.cached.set('test-dataset',fixture.envelope);s.offline();
-  assert.equal(await s.vault.restore(),true);assert.equal(s.vault.getStatus().offline,true);assert.equal(s.vault.getData().status.lastAttemptAt,'2026-10-19');assert.equal(s.starts,1);
+  assert.equal(await s.vault.restore(),true);await s.vault.refresh(true);assert.equal(s.vault.getStatus().offline,true);assert.equal(s.vault.getData().status.lastAttemptAt,'2026-10-19');assert.equal(s.starts,1);
 });
 test('offline first unlock fails safely when no authenticated ciphertext exists',async()=>{
   const fixture=await encrypted(),s=setup(fixture);s.offline();await assert.rejects(s.vault.unlock(fixture.access));assert.equal(s.starts,0);assert.equal(s.values.has(V.ACCESS_KEY),false);
+});
+
+test('saved access opens authenticated local data before a stalled network request completes',async()=>{
+  const fixture=await encrypted();let resolveFetch,started=0;
+  const updates=[];
+  const vault=V.createVault({crypto:webcrypto,
+    storage:{getItem:()=>JSON.stringify(fixture.access),setItem(){}},
+    cache:{async get(){return fixture.envelope},async put(){}},
+    fetchEnvelope:()=>new Promise(resolve=>{resolveFetch=resolve}),onUnlock(){started++}
+  });
+  vault.subscribe((data,status)=>updates.push(status));
+  assert.equal(await vault.restore(),true);
+  assert.equal(started,1);assert.deepEqual(vault.getData(),bundle());assert.equal(vault.getStatus().checking,true);
+  const refresh=vault.refresh(true);resolveFetch(fixture.envelope);await refresh;
+  assert.equal(vault.getStatus().checking,false);assert.equal(vault.getStatus().offline,false);
+  assert.equal(updates.length,2);
+});
+
+test('a corrupt local copy cannot start the app while the network is still unavailable',async()=>{
+  const fixture=await encrypted();let started=0;
+  const vault=V.createVault({crypto:webcrypto,storage:{getItem:()=>JSON.stringify(fixture.access),setItem(){}},
+    cache:{async get(){return {...fixture.envelope,ciphertext:'A'.repeat(32)}},async put(){}},
+    async fetchEnvelope(){throw Error('unavailable')},onUnlock(){started++}
+  });
+  await assert.rejects(vault.restore());assert.equal(started,0);assert.equal(vault.getData(),null);
 });
 test('refresh is shared, throttled and never replaces good data/cache with tampering',async()=>{
   const fixture=await encrypted(),s=setup(fixture);await s.vault.unlock(fixture.access);
@@ -98,7 +123,7 @@ test('refresh is shared, throttled and never replaces good data/cache with tampe
 test('a damaged remote update restores the authenticated cache, but a wrong key cannot use it',async()=>{
   const fixture=await encrypted(),s=setup(fixture,{[V.ACCESS_KEY]:JSON.stringify(fixture.access)});
   s.cached.set('test-dataset',fixture.envelope);fixture.envelope={schemaVersion:99};
-  assert.equal(await s.vault.restore(),true);assert.deepEqual(s.vault.getData(),bundle());assert.equal(s.vault.getStatus().offline,true);
+  assert.equal(await s.vault.restore(),true);await s.vault.refresh(true);assert.deepEqual(s.vault.getData(),bundle());assert.equal(s.vault.getStatus().offline,true);
   const wrong=(await encrypted()).access;await assert.rejects(s.vault.unlock(wrong));assert.deepEqual(JSON.parse(s.values.get(V.ACCESS_KEY)),fixture.access);
 });
 test('failed script loading can retry and concurrent activations start the app once',async()=>{

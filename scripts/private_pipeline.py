@@ -28,6 +28,7 @@ KEY_NAMES = {'runtime': 'runtime.key', 'data': 'data.key'}
 AAD_PREFIX = {'runtime': 'sparnah-runtime:v1:', 'data': 'sparnah-vault:v1:'}
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 MAX_EXPANDED_BYTES = 96 * 1024 * 1024
+MAX_DATA_BYTES = 40 * 1024 * 1024
 MAX_FILES = 2048
 REQUIRED = ('importer.py', 'frosta_groups.py', 'scripts/update_offers.py',
             'scripts/update_assortment.py', 'scripts/update_leaflets.py',
@@ -96,10 +97,11 @@ def json_bytes(value):
 
 def encrypt_bytes(plain, key, dataset_id, kind):
     validate_dataset_id(dataset_id)
-    if kind not in AAD_PREFIX or len(key) != 32 or len(plain) > MAX_EXPANDED_BYTES:
+    limit = MAX_DATA_BYTES if kind == 'data' else MAX_EXPANDED_BYTES
+    if kind not in AAD_PREFIX or len(key) != 32 or len(plain) > limit:
         raise PipelineError('encryption')
     content = gzip.compress(plain, compresslevel=9, mtime=0) if kind == 'data' else plain
-    if len(content) > MAX_EXPANDED_BYTES:
+    if len(content) > limit:
         raise PipelineError('encryption')
     iv = secrets.token_bytes(12)
     cipher = AESGCM(key).encrypt(iv, content, (AAD_PREFIX[kind] + dataset_id).encode('utf8'))
@@ -121,13 +123,14 @@ def decrypt_bytes(envelope, key, kind):
             raise ValueError()
         dataset = validate_dataset_id(envelope['datasetId'])
         iv, cipher = b64decode(envelope['iv']), b64decode(envelope['ciphertext'])
-        if len(iv) != 12 or len(cipher) < 16 or len(cipher) > MAX_EXPANDED_BYTES + 16:
+        limit = MAX_DATA_BYTES if kind == 'data' else MAX_EXPANDED_BYTES
+        if len(iv) != 12 or len(cipher) < 16 or len(cipher) > limit + 16:
             raise ValueError()
         content = AESGCM(key).decrypt(iv, cipher, (AAD_PREFIX[kind] + dataset).encode('utf8'))
         if envelope.get('compression') == 'gzip':
             with gzip.GzipFile(fileobj=io.BytesIO(content), mode='rb') as zipped:
-                content = zipped.read(MAX_EXPANDED_BYTES + 1)
-            if len(content) > MAX_EXPANDED_BYTES:
+                content = zipped.read(limit + 1)
+            if len(content) > limit:
                 raise ValueError()
         return content
     except Exception:

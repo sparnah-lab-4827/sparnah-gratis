@@ -68,7 +68,7 @@
     const confirmed = !!(!ambiguous && (picked ? photoMatches(picked) : ownPhoto));
     const title = picked ? picked.title : target.title;
     const product = {...source,title,pack:selected.pack || item.pack,image:confirmed ? source.image : null,
-      emoji:source.emoji || item.emoji || '🛍️',subtitle:packText(selected.pack),displayOnly:true};
+      emoji:[source.emoji,item.emoji].find(value=>value && value!=='🛒') || '🛍️',subtitle:packText(selected.pack),displayOnly:true};
     if (!confirmed) { delete product.imageAlt; delete product.imageSourceUrl; delete product.imagePack; }
     return {product,title,imageConfirmed:confirmed,ambiguous,
       label:ambiguous ? (!validPack ? 'Packung noch nicht eindeutig' : 'Sorte laut Angebot wählen') : (confirmed ? '' : 'Produktfoto fehlt')};

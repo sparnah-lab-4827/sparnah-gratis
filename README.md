@@ -13,10 +13,14 @@ Die private Datensammlung wird mit einer separat bereitgestellten Zugangsdatei a
 ## Benutzen
 
 1. Die App öffnen und die eigene Zugangsdatei auswählen.
-2. Unter **Läden** die gewünschten Märkte auswählen.
+2. Unter **Läden** die gewünschten Märkte einzeln oder mit **Märkte mit Preisen wählen** auswählen.
 3. Produkte und Mengen auf die Liste setzen. Pro Position **Meine Auswahl** oder **Günstigstes passendes Produkt** wählen.
 4. Im **Sparplan** Woche und maximal ein, zwei oder drei Geschäfte wählen.
 5. Auf Android im Browser **App installieren** beziehungsweise **Zum Startbildschirm hinzufügen** wählen.
+
+Eine leere Liste bietet **Mit passenden Preisen ausprobieren**. Dabei werden ausschließlich Beispielprodukte mit bestätigten Preisen für die gewählten Märkte, Woche und Ladenbegrenzung eingefügt. Allgemeine Wünsche wie Äpfel oder Nudeln erkennen passende frische beziehungsweise einfache Produkte mit derselben Packung; bestimmte Marken, Sorten und abweichende Größen bleiben getrennt.
+
+Beim Wiederöffnen erscheint der zuletzt authentifizierte lokale Datenstand sofort. Neue Daten werden im Hintergrund geprüft. Alte Preise und Prospekte behalten ihre ursprünglichen Gültigkeitsdaten.
 
 Auswahl und Listen werden nicht zwischen Geräten synchronisiert. Für ein zusätzliches Gerät wird die Zugangsdatei erneut benötigt. Sicherungen und die Zugangsdatei müssen getrennt aufbewahrt werden.
 

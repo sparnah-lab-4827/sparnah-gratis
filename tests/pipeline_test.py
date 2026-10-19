@@ -109,7 +109,7 @@ process.stdin.on('data',x=>input+=x);process.stdin.on('end',async()=>{
     def test_decompression_limit_and_invalid_gzip_fail_without_publishing_plaintext(self):
         large=P.encrypt_bytes(b'x'*8192,self.data_key,self.dataset,'data')
         self.assertLess(len(P.b64decode(large['ciphertext'])),1024)
-        with patch.object(P,'MAX_EXPANDED_BYTES',1024),self.assertRaises(P.PipelineError):
+        with patch.object(P,'MAX_DATA_BYTES',1024),self.assertRaises(P.PipelineError):
             P.decrypt_bytes(large,self.data_key,'data')
         iv=secrets.token_bytes(12)
         cipher=P.AESGCM(self.data_key).encrypt(iv,b'not-gzip',('sparnah-vault:v1:'+self.dataset).encode())

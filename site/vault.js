@@ -8,7 +8,7 @@
   'use strict';
   const ACCESS_KEY = 'sparnah-private-access-v1';
   const DATA_URL = 'data/private.enc.json';
-  const VERSION = '20261019-private-daten2';
+  const VERSION = '20261019-alltag';
   const MAX_BYTES = 40 * 1024 * 1024;
   const object = value => value && typeof value === 'object' && !Array.isArray(value);
   const idValid = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
@@ -89,14 +89,12 @@
     }
     function publish(result) {
       data = result.bundle;
-      status = { unlocked: true, offline: result.offline, cacheAvailable: result.cacheAvailable, error: result.error || '' };
-      lastRefresh = now();
+      status = { unlocked: true, offline: result.offline, checking: !!result.checking, cacheAvailable: result.cacheAvailable, error: result.error || '' };
+      if (!result.checking) lastRefresh = now();
       for (const fn of listeners) fn(data, { ...status });
       return { ok: true, ...status };
     }
-    async function unlock(value) {
-      const candidate = parseAccess(value), ticket = ++generation;
-      const result = await load(candidate);
+    async function finishUnlock(candidate, result, ticket) {
       if (ticket !== generation) throw new Error('Die Freigabe wurde abgebrochen.');
       access = candidate;
       try { deps.storage.setItem(ACCESS_KEY, JSON.stringify(candidate)); } catch {}
@@ -106,6 +104,10 @@
         await startInFlight;
       }
       return response;
+    }
+    async function unlock(value) {
+      const candidate = parseAccess(value), ticket = ++generation;
+      return finishUnlock(candidate, await load(candidate), ticket);
     }
     function refresh(force = false) {
       if (!access) return Promise.reject(new Error('Bitte Sparnah zuerst freigeben.'));
@@ -128,7 +130,18 @@
       let value;
       try { value = deps.storage.getItem(ACCESS_KEY); } catch {}
       if (!value) return false;
-      await unlock(value);
+      const candidate = parseAccess(value), ticket = ++generation;
+      let cached;
+      try {
+        const envelope = await deps.cache.get(candidate.datasetId);
+        if (envelope) cached = await decryptEnvelope(envelope, candidate, deps.crypto);
+      } catch {} // An invalid local copy can only be replaced by authenticated network data.
+      if (cached) {
+        await finishUnlock(candidate, {bundle:cached, offline:false, checking:true, cacheAvailable:true}, ticket);
+        if (ticket === generation) void refresh(true).catch(() => {});
+      } else {
+        await finishUnlock(candidate, await load(candidate), ticket);
+      }
       return true;
     }
     function lock() {

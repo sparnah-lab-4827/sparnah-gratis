@@ -1,6 +1,6 @@
 /* Offline shell only. Authenticated ciphertext is stored by vault.js in IndexedDB. */
-const CACHE='sparnah-free-shell-v15-private-daten2';
-const VERSION='20261019-private-daten2';
+const CACHE='sparnah-free-shell-v16-alltag';
+const VERSION='20261019-alltag';
 const FILES=['index.html','styles.css','engine.js','search.js','leaflets.js','choices.js','selection.js','vault.js','app.js','manifest.webmanifest','icon.svg','icon-192.png','icon-512.png'];
 const ASSETS=['./',...FILES.map(path=>/\.(js|css)$/.test(path)?path+'?v='+VERSION:path)];
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(ASSETS)).then(()=>self.skipWaiting())));
