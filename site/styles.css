@@ -47,3 +47,6 @@
 .vault-card h1{font-size:38px;line-height:1.12;letter-spacing:-1.2px;margin:16px 0 20px}.vault-card p{font-size:14px;line-height:1.7;margin:16px 0 24px;color:var(--muted)}
 .vault-card .primary{font-size:15px;min-height:52px}.vault-card p.vault-help{font-size:12px;margin-bottom:0}.vault-card #access-message{margin-bottom:0;min-height:1.7em}.vault-card .error-text{color:var(--red)}
 @media(max-width:480px){.vault-card{padding:30px 23px}.vault-card h1{font-size:34px}}
+.install-help{padding:28px;max-width:460px}.install-help p{margin:16px 0 24px;line-height:1.7}.install-help button{min-height:48px}
+
+.destination-picker{display:grid;gap:10px;margin:0 0 24px;max-width:680px}.destination-picker select{width:100%;min-height:48px}

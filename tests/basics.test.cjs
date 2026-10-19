@@ -67,3 +67,11 @@ test('a missing selected photo uses the food symbol without inventing an image',
   assert.equal(selected.title,'Rote Tafeläpfel');assert.equal(selected.product.emoji,'🍎');
   assert.equal(selected.imageConfirmed,false);assert.equal(selected.product.image,null);
 });
+
+test('generic wishes already allow appropriate brands without requiring a second cheapest toggle',()=>{
+ const milk=wish('milch-35','Milch 3,5 %',pack(1000,'ml')),butter=wish('butter','Butter',pack(250)),rice=wish('reis','Reis',pack(1000)),yogurt=wish('joghurt','Naturjoghurt',pack(500));
+ const products=[milk,butter,rice,yogurt,{id:'brand',brand:'Brand A',title:'Brand A'}];
+ for(const [want,title,size] of [[milk,'Brand A Haltbare Milch 3,5 % Fett',pack(1000,'ml')],[butter,'Brand A Deutsche Markenbutter',pack(250)],[rice,'Brand A Parboiled Reis',pack(1000)],[yogurt,'Brand A Joghurt 3,5 % Fett 500 g, milder Naturjoghurt',pack(500)]])assert.equal(match(want,offer(title,size),products),'group',title);
+ for(const [want,title,size] of [[milk,'Brand A Milch 1,5 % Fett',pack(1000,'ml')],[milk,'Brand A Schokomilch 3,5 %',pack(1000,'ml')],[butter,'Brand A Margarine',pack(250)],[butter,'Brand A Kräuterbutter',pack(250)],[rice,'Brand A Milchreis mit Zimt',pack(1000)],[rice,'Brand A Reisnudeln',pack(1000)],[yogurt,'Brand A Joghurt Erdbeere',pack(500)],[yogurt,'Brand A Naturjoghurt mit Honig',pack(500)],[yogurt,'Brand A Soja Naturjoghurt',pack(500)]])assert.equal(match(want,offer(title,size),products),'none',title);
+ assert.equal(match({...butter,variantId:'specific'},offer('Brand A Deutsche Markenbutter',pack(250)),products),'none');
+});

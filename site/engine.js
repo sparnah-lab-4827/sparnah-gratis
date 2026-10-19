@@ -81,6 +81,10 @@
     const notBefore = options.notBefore || weekStart;
     const maxStores = Math.max(1, Math.min(3, Number(options.maxStores) || 2));
     const enabled = new Set(options.enabledStores || stores.map(s => s.id));
+    // An explicit destination is a shopping decision, never a price or stock claim.
+    if (options.targetStoreId && enabled.has(options.targetStoreId)) {
+      for (const id of enabled) if (id !== options.targetStoreId) enabled.delete(id);
+    }
     const active = items.filter(x => !x.deleted && !x.checked && x.qty > 0);
     const days = daysOfWeek(weekStart).filter(day => day >= notBefore);
     const eligible = offers.filter(o => enabled.has(o.storeId) && days.some(day => validOn(o, day)));

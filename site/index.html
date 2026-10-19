@@ -10,13 +10,14 @@
   <title>Sparnah · Clever einkaufen</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css?v=20261019-alltag">
-  <script defer src="engine.js?v=20261019-alltag"></script>
-  <script defer src="search.js?v=20261019-alltag"></script>
-  <script defer src="leaflets.js?v=20261019-alltag"></script>
-  <script defer src="choices.js?v=20261019-alltag"></script>
-  <script defer src="selection.js?v=20261019-alltag"></script>
-  <script defer src="vault.js?v=20261019-alltag"></script>
+  <link rel="stylesheet" href="styles.css?v=20261019-handy">
+  <script defer src="install.js?v=20261019-handy"></script>
+  <script defer src="engine.js?v=20261019-handy"></script>
+  <script defer src="search.js?v=20261019-handy"></script>
+  <script defer src="leaflets.js?v=20261019-handy"></script>
+  <script defer src="choices.js?v=20261019-handy"></script>
+  <script defer src="selection.js?v=20261019-handy"></script>
+  <script defer src="vault.js?v=20261019-handy"></script>
 </head>
 <body class="vault-locked">
   <section class="vault-screen" id="vault-screen" aria-labelledby="vault-title">
@@ -25,11 +26,13 @@
       <h1 id="vault-title">Dein Einkauf.<br>Privat geplant.</h1>
       <p>Öffne deine Zugriffsdatei, um Märkte, Produkte und Angebote auf diesem Gerät freizugeben.</p>
       <button class="primary wide" id="access-open" type="button">Zugriffsdatei öffnen</button>
+      <button class="secondary wide" id="install-open" type="button" style="margin-top:12px">Sparnah auf diesem Gerät installieren</button>
       <p id="access-message" role="status" aria-live="polite"></p>
-      <p class="vault-help">Die Datei bleibt auf deinem Gerät. Sie ist unabhängig von deiner Listensicherung. Deine vorhandene Einkaufsliste bleibt erhalten.</p>
+      <p class="vault-help">Am Android-Handy in Chrome öffnen. Mit deinem privaten Freigabe-QR ist keine Dateiauswahl nötig. Danach kannst du Sparnah als App installieren. Deine vorhandene Einkaufsliste bleibt erhalten.</p>
     </div>
   </section>
   <input id="access-file" type="file" accept="application/json,.json" hidden>
+  <dialog id="install-dialog" aria-labelledby="install-title"><div class="install-help"><h2 id="install-title">Sparnah installieren</h2><p id="install-message"></p><button class="primary" id="install-close" type="button">Verstanden</button></div></dialog>
   <a class="skip-link" href="#main">Zum Inhalt springen</a>
   <header class="topbar" id="header"></header>
   <div class="app-layout">

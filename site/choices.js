@@ -29,7 +29,7 @@
     if (/^(?:ferrero )?nutella(?:\s|$)/.test(title)) return 'ferrero';
     return brands.find(brand => title === brand || title.startsWith(brand + ' ')) || '';
   }
-  function withoutPack(title) { return title.replace(/\b\d+(?:[.,]\d+)?\s*(?:g|kg|ml|l|stuck|st\.?)(?=\s|$)/g, '').replace(/\s+/g, ' ').trim(); }
+  function withoutPack(title) { return title.replace(/\b\d+(?:[.,]\d+)?\s*(?:g|kg|ml|l|stuck|st\.?)(?=\s|$|[,;])/g, '').replace(/\s+/g, ' ').trim(); }
   function withoutBrand(product, brands) {
     let title = withoutPack(normalize(product.title));
     const brand = brandOf(product, brands);
@@ -100,6 +100,15 @@
     const same = sameProductProfile(product, brands);
     return same ? [same] : [];
   }
+  function profileGroups(product, brands) { return profiles(product, brands).flatMap(profile => {
+        if (profile.kind === 'butter' && profile.style !== 'any') return [profile.group, profile.group.replace(`:${profile.style}:`, ':any:')];
+        if (profile.kind !== 'milk') return [profile.group];
+        // Unspecified milk processing/pasture wishes may also use a more specific matching milk.
+        const groups = [profile.group];
+        if (profile.processing !== 'any') groups.push(profile.group.replace(`:${profile.processing}:`, ':any:'));
+        if (profile.grazing !== 'any') for (const group of [...groups]) groups.push(group.replace(':pasture:', ':any:'));
+        return groups;
+      }); }
   function basicGroups(product, products, brands) {
     // Broad list wishes name a food, not a particular brand or cultivar.
     // Keep those wishes separate from exact catalogue products and all opt-in substitutions.
@@ -109,9 +118,16 @@
     const appleWords = /^(?:apfel|tafelapfel|bio|bioland|demeter|dtsch|deutsche?|deutschen|ital|italienische?|italienischen|frische?|frischen|rot|rote|roten|grun|grune|grunen|gelb|gelbe|gelben|gala|royal|elstar|braeburn|jonagold|jonagored|granny|smith|golden|delicious|pink|lady|im|beutel|netz|schale)$/;
     const freshApples = product.pack.unit === 'g' && words.some(word => /^(?:tafel)?apfel$/.test(word)) && words.every(word => appleWords.test(word));
     const plainPasta = product.pack.unit === 'g' && /^(?:(?:bio|italienische?|getrocknete?|hartweizen|durum|semola)\s+)*(?:spaghetti|spaghettini|penne(?: rigate)?|fusilli|farfalle|rigatoni|maccheroni|pasta|nudeln)(?:\s+(?:verschiedene sorten|versch sorten))?$/.test(title);
+    const plainRice = product.pack.unit === 'g' && /^(?:(?:bio|parboiled|basmati|jasmin|langkorn|rundkorn|vollkorn)\s+)*(?:reis|basmatireis|jasminreis|langkornreis|rundkornreis)$/.test(title);
+    const yogurtWords=withoutBrand(product,brands).replace(/\b\d+(?:[.,]\d+)?\s*%/g,'').replace(/[.,-]+/g,' ').split(/\s+/).filter(Boolean);
+    const naturalYogurt=product.pack.unit==='g' && yogurtWords.includes('naturjoghurt') && yogurtWords.every(w=>/^(?:bio|joghurt|naturjoghurt|mild|milde|milder|fett|natur)$/.test(w));
+    const candidates=profileGroups(product,brands);
     return products.filter(wish => !wish.variantId && !wish.brand && packKey(wish.pack) === packKey(product.pack) &&
       (freshApples && wish.groupId === 'aepfel' && normalize(wish.title) === 'apfel' ||
-       plainPasta && wish.groupId === 'nudeln' && normalize(wish.title) === 'nudeln')).map(wish => wish.groupId);
+       plainPasta && wish.groupId === 'nudeln' && normalize(wish.title) === 'nudeln' ||
+       plainRice && wish.groupId === 'reis' && normalize(wish.title) === 'reis' ||
+       naturalYogurt && wish.groupId === 'joghurt' && normalize(wish.title) === 'naturjoghurt' ||
+       ['butter','milch-35'].includes(wish.groupId) && profiles(wish,brands).some(p=>candidates.includes(p.group)))).map(wish => wish.groupId);
   }
   function getChoice(product, products = []) {
     const candidates = profiles(product, knownBrands(products));
@@ -125,21 +141,13 @@
   function annotateOffers(offers, products = []) {
     const byId = new Map(products.map(p => [p.id, p])), brands = knownBrands(products);
     const basics = products.filter(p => !p.variantId && !p.brand &&
-      (p.groupId === 'aepfel' && normalize(p.title) === 'apfel' || p.groupId === 'nudeln' && normalize(p.title) === 'nudeln'));
+      ['aepfel','nudeln','reis','joghurt','butter','milch-35'].includes(p.groupId));
     return (offers || []).map(offer => {
       if (!offer || offer.packUnconfirmed || !['source', 'household'].includes(offer.verification) || !packKey(offer.pack)) return offer;
       const linked = byId.get(offer.productId);
       // The offer's actual title and pack take precedence over its catalogue link.
       const candidate = {...linked, ...offer, title: offer.title || (linked && linked.title), brand: offer.brand || (linked && linked.brand), groupId: linked && linked.groupId};
-      const additions = basicGroups(candidate, basics, brands).concat(profiles(candidate, brands).flatMap(profile => {
-        if (profile.kind === 'butter' && profile.style !== 'any') return [profile.group, profile.group.replace(`:${profile.style}:`, ':any:')];
-        if (profile.kind !== 'milk') return [profile.group];
-        // Unspecified milk processing/pasture wishes may also use a more specific matching milk.
-        const groups = [profile.group];
-        if (profile.processing !== 'any') groups.push(profile.group.replace(`:${profile.processing}:`, ':any:'));
-        if (profile.grazing !== 'any') for (const group of [...groups]) groups.push(group.replace(':pasture:', ':any:'));
-        return groups;
-      }));
+      const additions = basicGroups(candidate, basics, brands).concat(profileGroups(candidate, brands));
       if (!additions.length) return offer;
       return {...offer, groupIds: [...new Set([...(offer.groupIds || []), ...additions])]};
     });
