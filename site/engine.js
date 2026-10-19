@@ -69,7 +69,13 @@
     const days = daysOfWeek(weekStart).filter(day => day >= notBefore);
     return offers.filter(o => (!storeIds || storeIds.includes(o.storeId)) && days.some(day => validOn(o, day)) && offerUsable(o, quantity))
       .map(o => ({ offer: o, match: match(product, o) })).filter(x => x.match.status !== 'none')
-      .sort((a, b) => (a.match.status === 'uncertain') - (b.match.status === 'uncertain') || a.offer.priceCents - b.offer.priceCents);
+      .sort((a, b) => (a.match.status === 'uncertain') - (b.match.status === 'uncertain') || comparisonCost(product,a.offer,quantity)-comparisonCost(product,b.offer,quantity) || a.offer.priceCents-b.offer.priceCents);
+  }
+  function comparisonCost(product,offer,quantity){
+    const reference=product.referencePack,actual=offer.pack;
+    // Compare alternatives at the original requested weight; payable totals stay actual cents.
+    return product.compareByUnit&&reference&&actual&&reference.min===reference.max&&reference.min>0&&actual.min===actual.max&&actual.min>0&&actual.unit===reference.unit
+      ? offer.priceCents*quantity*reference.min/actual.min : offer.priceCents*quantity;
   }
   function storeOpenOn(store,day){return !(store.closedDates||[]).includes(day)&&!(store.temporaryClosureUntil&&day<=store.temporaryClosureUntil&&(!store.temporaryClosureFrom||day>=store.temporaryClosureFrom));}
   function expandOffers(offers,stores){
@@ -100,8 +106,8 @@
             if (offer.storeId !== store.id || !validOn(offer, day) || !offerUsable(offer, item.qty)) continue;
             const m = match(item.product, offer);
             if (!['exact', 'group'].includes(m.status)) continue;
-            const cost = offer.priceCents * item.qty, deposit = (offer.depositCents || 0) * item.qty;
-            if (!best || cost < best.cost || (cost === best.cost && deposit < best.deposit)) best = { item, offer, cost, deposit, day, storeId: store.id, match: m.status };
+            const cost = offer.priceCents * item.qty, deposit = (offer.depositCents || 0) * item.qty,compareCost=comparisonCost(item.product,offer,item.qty);
+            if (!best || compareCost < best.compareCost || (compareCost === best.compareCost && (cost < best.cost || cost === best.cost && deposit < best.deposit))) best = { item, offer, cost, compareCost, deposit, day, storeId: store.id, match: m.status };
           }
           return best;
         })
@@ -109,18 +115,19 @@
     })).filter(s => s.days.some(d => d.lines.some(Boolean)));
     let evaluated = 0;
     function score(visits) {
-      const lines = active.map((_, i) => visits.map(v => v.lines[i]).filter(Boolean).sort((a, b) => a.cost - b.cost || a.deposit - b.deposit || a.day.localeCompare(b.day) || a.storeId.localeCompare(b.storeId))[0] || null);
+      const lines = active.map((_, i) => visits.map(v => v.lines[i]).filter(Boolean).sort((a, b) => a.compareCost - b.compareCost || a.cost-b.cost || a.deposit - b.deposit || a.day.localeCompare(b.day) || a.storeId.localeCompare(b.storeId))[0] || null);
       const known = lines.filter(Boolean), used = new Set(known.map(l => l.storeId));
       const daySet = new Set(known.map(l => l.day));
       const total = known.reduce((n, l) => n + l.cost, 0);
+      const comparisonTotal = known.reduce((n,l)=>n+l.compareCost,0);
       const deposit = known.reduce((n, l) => n + l.deposit, 0);
       const latest = [...daySet].sort().pop() || weekStart;
       evaluated++;
-      return { lines, coverageKey: lines.map(l => l ? '1' : '0').join(''), coverage: known.length, total, deposit, usedCount: used.size, dayCount: daySet.size, latest, dayKey: [...daySet].sort().join(',') };
+      return { lines, coverageKey: lines.map(l => l ? '1' : '0').join(''), coverage: known.length, total, comparisonTotal, deposit, usedCount: used.size, dayCount: daySet.size, latest, dayKey: [...daySet].sort().join(',') };
     }
     function better(a, b) {
       return !b || a.coverage > b.coverage || (a.coverage === b.coverage && (
-        a.coverageKey > b.coverageKey || (a.coverageKey === b.coverageKey && (a.total < b.total || (a.total === b.total && (
+        a.coverageKey > b.coverageKey || (a.coverageKey === b.coverageKey && (a.comparisonTotal < b.comparisonTotal || (a.comparisonTotal === b.comparisonTotal && (
           a.usedCount < b.usedCount || (a.usedCount === b.usedCount && (
             a.dayCount < b.dayCount || (a.dayCount === b.dayCount && (
               a.latest < b.latest || (a.latest === b.latest && a.dayKey < b.dayKey)
@@ -188,13 +195,14 @@
     const visitDays = [...new Set(visits.map(visit => visit.day))].sort();
     const referenced = known.filter(l => Number.isSafeInteger(l.offer.referencePriceCents) && l.offer.referencePriceCents >= l.offer.priceCents);
     const referenceSavings = referenced.length ? referenced.reduce((n, l) => n + (l.offer.referencePriceCents - l.offer.priceCents) * l.item.qty, 0) : null;
-    const complete = result.coverage === active.length;
+    const complete = result.coverage === active.length,unitComparisons=active.some(i=>i.product.compareByUnit);
     return { ...result, weekStart, notBefore, count: active.length, complete, empty: false, unknown,
       visits, usedCount: visits.length, dayCount: visitDays.length,
       latest: visitDays[visitDays.length - 1] || result.latest, dayKey: visitDays.join(','),
       referenceSavings, referenceCount: referenced.length,
       oneStore: { coverage: one.coverage, total: one.total, complete: one.coverage === active.length },
-      extraStoreSavings: complete && one.coverage === active.length ? one.total - result.total : null,
+      unitComparisons,
+      extraStoreSavings: !unitComparisons && complete && one.coverage === active.length ? one.total - result.total : null,
       evaluated, assumptions: { allowSplitDays: !!options.allowSplitDays, maxStores, notBefore, oneVisitPerStore: true, travelCostsIncluded: false }
     };
   }

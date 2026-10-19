@@ -41,3 +41,7 @@ Der öffentliche Workflow verarbeitet keine Einkaufslisten. Die automatische Pr�
 Die öffentliche Oberfläche liegt unter `site/`, der generische Verschlüsselungs- und Aktualisierungsablauf unter `scripts/`. Tests für diesen öffentlichen Teil verwenden ausschließlich neutrale Prüfdaten. Die private Importlaufzeit einschließlich ihrer Belege und Tests liegt verschlüsselt unter `protected/`.
 
 Produktbilder werden nach Freischaltung von externen Bildservern geladen; dabei fallen technische Verbindungsdaten an. Händlerseiten und Karten werden erst nach einem Klick geöffnet. Die App wird nicht von den Händlern betrieben.
+
+## Markenalternativen
+
+„Günstigstes passendes Produkt“ und der entsprechende Button für die ganze Liste erlauben passende Markenalternativen. Nuss-Nougat-Creme (einschließlich Nutella), eindeutig benannte Pasta- und Reissorten sowie die bestehenden Butter-/Milchregeln werden unterstützt. Bei neuen Markenalternativen sind bis zu 20 % kleinere oder größere Packungen möglich. Verglichen wird der Kilopreis, für eine gemischte Liste auf die ursprüngliche Wunschmenge umgerechnet; der angezeigte Gesamtpreis bleibt der tatsächliche Kassenbetrag bei unveränderter Packungsanzahl. Der Plan zeigt Produkt, Größe, Grundpreis und jede Größenabweichung. „Meine Auswahl“ erhält die ursprüngliche Marke und Packung. Fehlende Preise werden nicht geschätzt; weitere Produkttypen brauchen eigene Vergleichsregeln.

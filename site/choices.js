@@ -89,6 +89,22 @@
     if (product.groupSelection || product.isGroupChoice || !brand || !title || !packKey(product.pack) || /\b(?:oder|verschiedene|versch)\b|\//.test(title)) return null;
     return {kind: 'same-product', group: `choice:same:${key(brand)}:${key(title)}:${packKey(product.pack)}:${dietaryKey(product)}`, description: `Günstigster erfasster Preis derselben Marke und Produktausführung · ${packLabel(product.pack)}.`};
   }
+  function alternativeProfile(product, brands) {
+    if (!packKey(product.pack) || product.pack.unit !== 'g') return null;
+    const title = withoutBrand(product, brands).replace(/[,-]+/g,' ').replace(/\s+/g,' ').trim();
+    let family=null,label=null;
+    // Only the spread itself: the brand also sells biscuits, ice cream and snacks.
+    if (/^(?:ferrero )?nutella(?: classic| klassisch)?$/.test(title) || /^(?:bio )?(?:nuss nougat ?creme|nuss nugat ?creme|haselnuss nougat ?creme)$/.test(title)) {
+      family='hazelnut-cocoa-spread';label='Nuss-Nougat-Creme';
+    }
+    // Explicit product types, not a shared department or marketing keyword.
+    const pasta=title.match(/^(?:bio )?(?:hartweizen )?(spaghetti|spaghettini|penne(?: rigate)?|fusilli|farfalle|rigatoni)$/);
+    const rice=title.match(/^(?:bio )?(basmati(?:reis| reis)|jasmin(?:reis| reis)|parboiled reis|langkornreis|vollkornreis)$/);
+    if(pasta){family='pasta:'+pasta[1];label=pasta[1];}
+    if(rice){family='rice:'+rice[1].replace(/ /g,'');label=rice[1];}
+    if(!family)return null;
+    return {kind:'alternative',group:`choice:alternative:${family}:${product.pack.unit}:${dietaryKey(product)}`,description:`${label} verschiedener Marken, einschließlich Eigenmarken: günstigster Kilopreis. Ähnliche Packungen (bis zu 20 % kleiner oder größer als ${packLabel(product.pack)}), gleiche Anzahl Packungen. Tatsächliche Größe, Kilopreis und Kassenbetrag werden angezeigt; besondere Ernährungsangaben bleiben erhalten.`};
+  }
   function profiles(product, brands) {
     if (!product || product.packUnconfirmed || !packKey(product.pack)) return [];
     const butter = butterProfile(product, brands);
@@ -97,6 +113,8 @@
     if (milk.length) return milk;
     const frosta = frostaProfile(product, brands);
     if (frosta) return [frosta];
+    const alternative = alternativeProfile(product, brands);
+    if (alternative) return [alternative];
     const same = sameProductProfile(product, brands);
     return same ? [same] : [];
   }
@@ -133,7 +151,8 @@
     const candidates = profiles(product, knownBrands(products));
     // A product with several fat levels is an existing assortment choice, not one new fat-level promise.
     const profile = candidates.length === 1 ? candidates[0] : null;
-    return {product: profile ? {...product, groupId: profile.group, variantId: null} : product,
+    const choicePack=profile?.kind==='alternative'?{min:Math.ceil(product.pack.min*0.8),max:Math.floor(product.pack.max*1.2),unit:product.pack.unit}:product.pack;
+    return {product: profile ? {...product, groupId: profile.group, variantId: null,pack:choicePack,...(profile.kind==='alternative'?{compareByUnit:true,referencePack:product.pack}:{})} : product,
       label: 'Günstigstes passendes Produkt', kind: profile ? profile.kind : 'exact', available: !!product,
       broader: !!profile && profile.kind !== 'same-product',
       description: profile ? profile.description : 'Günstigster erfasster Preis deiner bisherigen Produktauswahl. Für weitere Alternativen fehlen eindeutige Vergleichsangaben.'};

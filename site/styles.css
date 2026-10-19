@@ -50,3 +50,5 @@
 .install-help{padding:28px;max-width:460px}.install-help p{margin:16px 0 24px;line-height:1.7}.install-help button{min-height:48px}
 
 .destination-picker{display:grid;gap:10px;margin:0 0 24px;max-width:680px}.destination-picker select{width:100%;min-height:48px}
+
+.pack-change{font-size:12px;line-height:1.5;color:var(--green);margin:6px 0}
