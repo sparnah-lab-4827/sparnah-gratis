@@ -48,7 +48,10 @@ test('shop pages, plan and settings do not expose addresses or map actions',asyn
 });
 
 test('offers shop selector follows subscriptions and clears a removed shop filter',async()=>{
- const app=openApp();
+ const app=openApp({configureFixture:data=>{
+   const start=E.mondayOf(),end=E.addDays(start,5);
+   data.catalog.offers=data.catalog.offers.map((o,i)=>({...o,priceKind:'offer',storeId:i?'other':'shop',start,end}));
+ }});
  const options=()=>app.html().match(/<select id="offer-store"[^>]*>(.*?)<\/select>/s)[1];
  await app.click('tab',{tab:'offers'});
  assert.match(options(),/value="shop"/);assert.doesNotMatch(options(),/value="other"/);
@@ -124,7 +127,10 @@ test('mobile navigation keeps the plan directly accessible and moves setup behin
  assert.equal(JSON.parse(app.storage.get('sparnah-v1')).base.settings.targetStoreId,'shop');
 });
 test('logo pickers in offers and brands follow selected stores and apply the chosen filter',async()=>{
- const app=openApp();
+ const app=openApp({configureFixture:data=>{
+   const start=E.mondayOf(),end=E.addDays(start,5);
+   data.catalog.offers=data.catalog.offers.map(o=>({...o,priceKind:'offer',start,end}));
+ }});
  for(const [tab,control] of [['offers','offer-store'],['brands','brand-store']]){
   await app.click('tab',{tab});
   assert.match(app.html(),/src="logos\/rewe.svg"/);assert.doesNotMatch(app.html(),/src="logos\/kaufland.png"/);

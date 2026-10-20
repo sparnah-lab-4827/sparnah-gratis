@@ -19,6 +19,8 @@ function openOffers({products=[],offers=[],shoppingLayouts={}}={}){
     html:()=>el('main').innerHTML,
     input:value=>{handlers.input({target:{id:'offer-search',value}});return el('offer-results').innerHTML;},
     changeStore:value=>handlers.change({target:{id:'offer-store',value,classList:{contains:()=>false}}}),
+    changeWeek:value=>click('week',{week:value}),
+    subscribe:(store,checked)=>handlers.change({target:{id:'',checked,dataset:{store},classList:{contains:name=>name==='store-toggle'}}}),
     element:el,
     refresh:next=>{data.catalog.offers=next;refreshData(data);},
     data
@@ -27,6 +29,8 @@ function openOffers({products=[],offers=[],shoppingLayouts={}}={}){
 const offer=(id,title,extra={})=>({id,productId:id,title,pack,groupIds:[id],priceCents:199,storeId:'a',start:'2026-10-19',end:'2026-10-24',verification:'source',sourceUrl:'https://example.com/'+id,...extra});
 const categoryIds=html=>[...html.matchAll(/<h2 id="offer-category-([^"]+)"/g)].map(m=>m[1]);
 const titles=html=>[...html.matchAll(/<article class="offer-card">.*?<h3>(.*?)<\/h3>/gs)].map(m=>m[1]);
+const storeOptions=app=>app.html().match(/<select id="offer-store"[^>]*>(.*?)<\/select>/s)[1];
+const storeIds=app=>[...storeOptions(app).matchAll(/<option value="([^"]+)"/g)].map(m=>m[1]);
 
 test('changing offers are grouped once each from category or title, with an unknown fallback',()=>{
   const offers=[
@@ -82,4 +86,51 @@ test('personal market order, labels and product assignments do not alter offer c
   assert.deepEqual(titles(edited.html()),titles(baseline.html()));
   assert.doesNotMatch(edited.html(),/Mein erster Gang/);
   assert.deepEqual(categoryIds(edited.html()),['produce','dairy']);
+});
+
+test('offer selector only lists subscribed markets with usable offers in the chosen week',()=>{
+  const app=openOffers({offers:[offer('a','Milch'),offer('off','Brot',{storeId:'off'})]});
+  assert.deepEqual(storeIds(app),['all','a']); // Subscribed market B has no offers.
+  app.subscribe('off',true);
+  assert.deepEqual(storeIds(app),['all','a','off']);
+  app.changeStore('off');app.subscribe('off',false);
+  assert.deepEqual(storeIds(app),['all','a']);
+  assert.match(storeOptions(app),/value="all" selected/);
+  for(const invalid of [
+    {priceKind:'regular'},{verification:'unverified'},{priceCents:null},{requiresCard:true},{requiresApp:true},
+    {start:'2026-10-12',end:'2026-10-17'},{start:'2026-10-26',end:'2026-10-31'}
+  ]){
+    app.refresh([offer('a','Milch'),offer('b','Gouda',{storeId:'b',...invalid})]);
+    assert.deepEqual(storeIds(app),['all','a'],JSON.stringify(invalid));
+  }
+});
+
+test('search text does not remove markets or reset a selected market, even after rerender',()=>{
+  const app=openOffers({offers:[offer('a','Milch'),offer('b','Brot',{storeId:'b'})]});
+  app.changeStore('b');
+  assert.deepEqual(titles(app.input('milch')),[]);
+  app.changeStore('b'); // Rerender with the search still active.
+  assert.deepEqual(storeIds(app),['all','a','b']);
+  assert.match(storeOptions(app),/value="b" selected/);
+  assert.deepEqual(titles(app.html()),[]);
+  assert.deepEqual(titles(app.input('')),['Brot']);
+});
+
+test('week change and catalog refresh reset unavailable market filters without losing offers',()=>{
+  const next=offer('b','Gouda',{storeId:'b',start:'2026-10-26',end:'2026-10-31'});
+  const app=openOffers({offers:[offer('a','Milch'),next]});
+  app.changeStore('a');app.changeWeek('next');
+  assert.deepEqual(storeIds(app),['all','b']);
+  assert.match(storeOptions(app),/value="all" selected/);
+  assert.deepEqual(titles(app.html()),['Gouda']);
+  app.changeStore('b');
+  app.refresh([offer('a-next','Äpfel',{start:'2026-10-26',end:'2026-10-31'})]);
+  assert.deepEqual(storeIds(app),['all','a']);
+  assert.match(storeOptions(app),/value="all" selected/);
+  assert.deepEqual(titles(app.html()),['Äpfel']);
+  app.refresh([]);
+  assert.deepEqual(storeIds(app),['all']);
+  assert.match(storeOptions(app),/Keine Angebote erfasst/);
+  assert.match(app.html(),/Hier fehlen noch Angebotsdaten/);
+  assert.doesNotMatch(app.html(),/Noch keine Märkte gewählt/);
 });
