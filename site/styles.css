@@ -187,3 +187,17 @@
  .shopping-row>.shopping-check{margin-top:15px}
  .list-row>.thumb{width:48px;height:58px}
 }
+
+/* Keep the estimate to one line until its explanation is requested. */
+.estimated-price{width:fit-content;max-width:100%;padding:0;margin:5px 0;border:0;border-radius:6px;font-size:12px}
+.estimated-price>summary{padding:7px 9px;min-height:32px;line-height:18px;cursor:pointer}
+.estimated-price>summary:focus-visible{outline:2px solid #684800;outline-offset:2px;border-radius:6px}
+.estimated-price[open]{width:100%}
+.estimate-explanation{padding:0 9px 9px;border-top:1px solid #a77a2033;overflow-wrap:anywhere}
+.list-row{padding:12px 14px;min-height:0}
+@media(max-width:680px){
+ .list-row{padding:10px 10px}
+ .list-row .product-choice{display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,1.45fr);gap:4px;margin-top:6px}
+ .list-row .product-choice button{min-width:0;padding:6px 7px;text-align:center}
+ .list-row>.row-end{flex-direction:row;align-items:center;gap:12px;margin-top:0}
+}

@@ -71,7 +71,7 @@ test('offers shop selector follows subscriptions and clears a removed shop filte
 
 test('missing prices show distinct estimates without changing confirmed totals, savings or offer results',async()=>{
  const app=openApp({today:'2026-10-20',missingProduct:{id:'missing',title:'Butter'}});
- assert.match(app.html(),/Geschätzt: ca. 1,20/);
+ assert.match(app.html(),/Geschätzt ca. 1,20/);
  await app.click('tab',{tab:'plan'});
  assert.match(app.html(),/Geschätztes Einkaufsbudget/);assert.match(app.html(),/ca. 5,19/);
  assert.match(app.html(),/3,99.*belegte Preise/);assert.match(app.html(),/1 Preis noch offen/);
@@ -79,16 +79,16 @@ test('missing prices show distinct estimates without changing confirmed totals, 
  await app.click('share-plan');assert.match(app.shared(),/Geschätzt ca. 1,20/);assert.match(app.shared(),/ca. 5,19/);
  await app.click('tab',{tab:'offers'});assert.doesNotMatch(app.html(),/Geschätzt|Richtwert/);
  await app.click('tab',{tab:'settings'});assert.match(app.html(),/Richtpreisliste/);assert.match(app.html(),/20.04./);
- await app.click('clear-stores');await app.click('tab',{tab:'list'});assert.doesNotMatch(app.html(),/Geschätzt: ca./);
+ await app.click('clear-stores');await app.click('tab',{tab:'list'});assert.doesNotMatch(app.html(),/Geschätzt ca./);
 });
 
 test('Soba without a merchant price gets a labelled pack estimate in list, plan and export',async()=>{
  const app=openApp({today:'2026-10-20',missingProduct:{id:'soba-group-bag',title:'Nissin Soba Bag / Beutel',brand:'Nissin',category:'Fertiggerichte',isGroupChoice:true,pack:null}});
- assert.match(app.html(),/Geschätzt: ca. 1,10/);
+ assert.match(app.html(),/Geschätzt ca. 1,10/);
  assert.match(app.html(),/Angenommene Packung:/);
  assert.match(app.html(),/ähnlichen Produkt geschätzt/);
  await app.click('quantity',{id:'soba-group-bag',delta:'1'});
- assert.match(app.html(),/Geschätzt: ca. 2,20/);
+ assert.match(app.html(),/Geschätzt ca. 2,20/);
  await app.click('tab',{tab:'plan'});
  assert.match(app.html(),/ca. 6,19/);assert.match(app.html(),/3,99.*belegte Preise/);
  await app.click('share-plan');
