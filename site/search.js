@@ -78,6 +78,54 @@
     }
     return [...names].filter(([key])=>!q||key.includes(q)).map(([key,name])=>({key,name,count:counts.get(key)||0})).sort((a,b)=>Number(b.key===q)-Number(a.key===q)||Number(b.key.startsWith(q))-Number(a.key.startsWith(q))||b.count-a.count||a.name.localeCompare(b.name,'de')).slice(0,limit);
   }
+  function createBrandSearch(index,offers){
+    const copyOffer=o=>({...o,...(o.pack?{pack:{...o.pack}}:{}),
+      ...(Array.isArray(o.groupIds)?{groupIds:[...o.groupIds]}:{}),
+      ...(Array.isArray(o.variantIds)?{variantIds:[...o.variantIds]}:{}),
+      ...(Array.isArray(o.applicableStoreIds)?{applicableStoreIds:[...o.applicableStoreIds]}:{})});
+    const names=new Map();
+    for(const name of index.brands){const key=brandKey(name);if(key&&!names.has(key))names.set(key,name);}
+    // Immutable identity/filter snapshots: construct a new instance after catalogue
+    // or price updates. Query text never creates persistent cache entries.
+    const rows=offers.map(original=>{
+      const brands=offerBrands(original,index).map(name=>{const key=brandKey(name);return {name,key,words:key.split(' ')};});
+      for(const {name,key} of brands)if(!names.has(key))names.set(key,name);
+      return {offer:copyOffer(original),brands};
+    });
+    const byEngine=new WeakMap();
+    function context({engine,weekStart,storeIds,storeId='all'}){
+      let cache=byEngine.get(engine);if(!cache){cache=new Map();byEngine.set(engine,cache);}
+      const key=JSON.stringify([weekStart,storeIds||null,storeId]);
+      if(cache.has(key)){
+        const value=cache.get(key);cache.delete(key);cache.set(key,value);return value;
+      }
+      const enabled=storeIds?new Set(storeIds):null,eligible=[],counts=new Map();
+      for(const row of rows){
+        const o=row.offer;
+        if(enabled&&!enabled.has(o.storeId)||(storeId!=='all'&&storeId!==o.storeId)||
+          !engine.overlapsWeek(o,weekStart)||!engine.offerUsable(o,Math.max(1,o.minQty||1)))continue;
+        eligible.push(row);
+        for(const {key}of row.brands)counts.set(key,(counts.get(key)||0)+1);
+      }
+      const value={eligible,counts};cache.set(key,value);
+      if(cache.size>8)cache.delete(cache.keys().next().value);
+      return value;
+    }
+    return {
+      brandOffers(query,options){
+        const q=brandKey(query);if(!q)return [];
+        const terms=q.split(' '),{eligible}=context(options);
+        return eligible.filter(row=>row.brands.some(({words})=>words.some((_,start)=>
+          terms.every((t,i)=>i===terms.length-1&&t.length>=2?words[start+i]?.startsWith(t):words[start+i]===t))))
+          .map(row=>copyOffer(row.offer)).sort((a,b)=>a.storeId.localeCompare(b.storeId)||a.title.localeCompare(b.title,'de'));
+      },
+      brandSuggestions(query,options){
+        const q=brandKey(query),{counts}=context(options),limit=options.limit===undefined?12:options.limit;
+        return [...names].filter(([key])=>!q||key.includes(q)).map(([key,name])=>({key,name,count:counts.get(key)||0}))
+          .sort((a,b)=>Number(b.key===q)-Number(a.key===q)||Number(b.key.startsWith(q))-Number(a.key.startsWith(q))||b.count-a.count||a.name.localeCompare(b.name,'de')).slice(0,limit);
+      }
+    };
+  }
   function assortmentHints(wish,products,{engine,storeIds}){
     const found=new Map();
     for(const p of products){
@@ -91,6 +139,50 @@
     }
     return [...found.values()];
   }
+  function createAssortmentHints(assortment,{choices,products=assortment,engine}){
+    const byProduct=new WeakMap(),byGroup=new Map(),byId=new Map();
+    const add=(map,key,row)=>{if(!key)return;if(!map.has(key))map.set(key,[]);map.get(key).push(row);};
+    const signature=p=>JSON.stringify(p);
+    const rows=(assortment||[]).filter(p=>p&&p.assortmentStoreId&&p.assortmentSourceUrl&&p.assortmentCheckedAt)
+      .map((original,order)=>({original,order,signature:signature(original)}));
+    // These price-free objects exist only to reuse vetted catalogue identities.
+    // They are never returned as offers, prices, stock or source verification.
+    const inputs=rows.map(({original:p})=>({...p,productId:p.id,
+      groupIds:[...new Set([p.groupId,...(p.offerGroupIds||[])].filter(Boolean))],
+      variantIds:p.variantId?[p.variantId]:null,pack:p.pack&&{...p.pack},verification:'source'}));
+    const annotated=choices.annotateOffers(inputs,products);
+    rows.forEach((row,i)=>{
+      const linked=annotated[i],p=row.original;
+      row.evidence={groupIds:[...(linked.groupIds||[])],variantIds:linked.variantIds?[...linked.variantIds]:null,
+        pack:linked.pack&&{...linked.pack},packUnconfirmed:linked.packUnconfirmed};
+      byProduct.set(p,row);add(byId,p.id,row);
+      for(const group of new Set([p.groupId,...row.evidence.groupIds]))add(byGroup,group,row);
+    });
+    function matchWith(wish,p,matchingEngine){
+      const row=p&&byProduct.get(p);
+      // A copied, injected or subsequently edited record is not part of this
+      // prepared snapshot. Rebuild after any catalogue update.
+      if(!wish||!row||signature(p)!==row.signature)return {status:'none'};
+      const same=p.id===wish.id||p.groupId===wish.groupId;
+      return matchingEngine.match(wish,{...row.evidence,
+        groupIds:same?[...new Set([wish.groupId,...row.evidence.groupIds])]:row.evidence.groupIds});
+    }
+    return {
+      match:(wish,p)=>matchWith(wish,p,engine),
+      assortmentHints(wish,{engine:matchingEngine=engine,storeIds}={}){
+        if(!wish)return [];
+        const candidates=[...new Set([...(byId.get(wish.id)||[]),...(byGroup.get(wish.groupId)||[])])]
+          .sort((a,b)=>a.order-b.order),found=new Map(),enabled=storeIds?new Set(storeIds):null;
+        for(const {original:p}of candidates){
+          if(enabled&&!enabled.has(p.assortmentStoreId))continue;
+          if(!['exact','group'].includes(matchWith(wish,p,matchingEngine).status))continue;
+          if(!found.has(p.assortmentStoreId))found.set(p.assortmentStoreId,{storeId:p.assortmentStoreId,products:[]});
+          found.get(p.assortmentStoreId).products.push(p);
+        }
+        return [...found.values()];
+      }
+    };
+  }
   function reconcileStores(settings,stores){
     // New catalogue entries never opt a user into another market. Keep local choices, including an empty selection.
     const enabled=new Set(Array.isArray(settings.enabledStores)?settings.enabledStores:[]);
@@ -102,5 +194,5 @@
     if(saved.pack&&(!pack||pack.unit!==saved.pack.unit||pack.min<saved.pack.min||pack.max>saved.pack.max))return saved;
     return current;
   }
-  return {normalize,build,search,restoreProduct,offerBrands,brandMatches,brandOffers,brandSuggestions,assortmentHints,reconcileStores,visualProduct};
+  return {normalize,build,search,restoreProduct,offerBrands,brandMatches,brandOffers,brandSuggestions,createBrandSearch,assortmentHints,createAssortmentHints,reconcileStores,visualProduct};
 });

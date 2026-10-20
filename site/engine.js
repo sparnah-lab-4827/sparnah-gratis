@@ -7,9 +7,14 @@
   'use strict';
   const iso = date => date.toISOString().slice(0, 10);
   const dateOf = value => new Date(value + 'T12:00:00Z');
+  const berlinDateFormatter=new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Berlin',year:'numeric',month:'2-digit',day:'2-digit'});
+  const moneyFormatter=new Intl.NumberFormat('de-DE',{style:'currency',currency:'EUR'});
+  const numberFormatter=new Intl.NumberFormat('de-DE');
+  const shortDateFormatters=[false,true].map(weekday=>new Intl.DateTimeFormat('de-DE',
+    {day:'2-digit',month:'2-digit',...(weekday?{weekday:'short'}:{}),timeZone:'UTC'}));
   function addDays(value, days) { const d = dateOf(value); d.setUTCDate(d.getUTCDate() + days); return iso(d); }
   function berlinToday(now = new Date()) {
-    const p = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
+    const p = berlinDateFormatter.formatToParts(now);
     return ['year', 'month', 'day'].map(k => p.find(x => x.type === k).value).join('-');
   }
   function nextMonday(today = berlinToday()) {
@@ -48,13 +53,13 @@
       quantity >= (offer.minQty || 1) && (!offer.maxQty || quantity <= offer.maxQty) &&
       ['source', 'household'].includes(offer.verification);
   }
-  function money(cents) { return new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(cents / 100); }
+  function money(cents) { return moneyFormatter.format(cents / 100); }
   function shortDate(value, weekday = false) {
-    return new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit', ...(weekday ? { weekday: 'short' } : {}), timeZone: 'UTC' }).format(dateOf(value));
+    return shortDateFormatters[weekday?1:0].format(dateOf(value));
   }
   function packLabel(p) {
     if (!p) return 'Packungsgröße offen';
-    const number = v => new Intl.NumberFormat('de-DE').format(v);
+    const number = v => numberFormatter.format(v);
     return (p.min === p.max ? number(p.min) : number(p.min) + '–' + number(p.max)) + ' ' + p.unit;
   }
   function unitPrice(offer) {
@@ -170,21 +175,25 @@
     const eligible = offers.filter(o => enabled.has(o.storeId) && days.some(day => validOn(o, day)));
     const offersByStore=new Map();
     for(const offer of eligible){
-      if(!offersByStore.has(offer.storeId))offersByStore.set(offer.storeId,[]);
-      offersByStore.get(offer.storeId).push(offer);
+      if(!offersByStore.has(offer.storeId))offersByStore.set(offer.storeId,new Map());
+      const groups=offersByStore.get(offer.storeId);
+      for(const group of new Set(Array.isArray(offer.groupIds)?offer.groupIds:[])){
+        if(!groups.has(group))groups.set(group,[]);
+        groups.get(group).push(offer);
+      }
     }
     if (!active.length) return { empty: true, weekStart, count: 0, coverage: 0, visits: [], unknown: [], complete: false };
     // Precompute one best, confirmed line for each item/store/day.
     const matrix = stores.filter(s => enabled.has(s.id)).map(store => ({
       store,
       days: days.filter(day => storeOpenOn(store,day)).map(day => {
-        const dailyOffers=(offersByStore.get(store.id)||[]).filter(offer=>validOn(offer,day));
+        const groupedOffers=offersByStore.get(store.id);
         return {
         storeId: store.id, day,
         lines: active.map(item => {
           let best = null;
-          for (const offer of dailyOffers) {
-            if (!offerUsable(offer, item.qty)) continue;
+          for (const offer of groupedOffers?.get(item.product.groupId)||[]) {
+            if (!validOn(offer,day) || !offerUsable(offer, item.qty)) continue;
             const m = match(item.product, offer);
             if (!['exact', 'group'].includes(m.status)) continue;
             const cost = offer.priceCents * item.qty, deposit = (offer.depositCents || 0) * item.qty,compareCost=comparisonCost(item.product,offer,item.qty);
@@ -279,14 +288,72 @@
         visitMap.set(store.id, {store, day, lines: [], unpriced: [], total: 0, deposit: 0});
       }
     }
-    if (visitMap.size === 1) {
-      const visit = [...visitMap.values()][0];
-      for (const entry of unknown) {
-        entry.assignedStoreId = visit.store.id;
-        entry.assignedDay = visit.day;
-        visit.unpriced.push(entry);
+    // Catalogue evidence only routes an unpriced errand among existing visits.
+    // It never supplies a price, confirms stock, or creates an extra shop visit.
+    const maxHintAge=Number.isInteger(options.assortmentMaxAgeDays)&&options.assortmentMaxAgeDays>=0&&options.assortmentMaxAgeDays<=365
+      ?options.assortmentMaxAgeDays:30;
+    const earliestHint=addDays(notBefore,-maxHintAge);
+    function assortmentEvidence(item) {
+      const pool=typeof options.assortmentHints?.get==='function'?options.assortmentHints.get(item.id):options.assortmentHints?.[item.id];
+      if (!Array.isArray(pool)) return [];
+      // A cheaper alternative is chosen only by a confirmed price comparison.
+      // With no price, catalogue routing must still substantiate the saved wish.
+      const wish=item.requestedProduct||item.product,result=[];
+      for (const hint of pool) {
+        if (!hint || !enabled.has(hint.storeId) || !stores.some(store=>store.id===hint.storeId) || !Array.isArray(hint.products)) continue;
+        for (const p of hint.products) {
+          if (!p || p.assortmentStoreId!==hint.storeId || p.packUnconfirmed || !p.pack ||
+            !Number.isFinite(p.pack.min) || p.pack.min<=0 || p.pack.min!==p.pack.max ||
+            typeof p.pack.unit!=='string' || !p.pack.unit) continue;
+          const checkedAt=typeof p.assortmentCheckedAt==='string'?p.assortmentCheckedAt.slice(0,10):'';
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(checkedAt) || checkedAt<earliestHint || checkedAt>notBefore ||
+            !Number.isFinite(Date.parse(checkedAt+'T12:00:00Z')) || dateOf(checkedAt).toISOString().slice(0,10)!==checkedAt) continue;
+          try {
+            const url=new URL(p.assortmentSourceUrl);
+            if (url.protocol!=='https:' || url.username || url.password) continue;
+          } catch { continue; }
+          // A trusted in-memory catalogue resolver may establish manufacturer
+          // aliases. It cannot override the original source, date or pack.
+          const packMatch=match(wish,{groupIds:[wish.groupId],
+            variantIds:wish.variantId?[wish.variantId]:null,pack:p.pack});
+          if (!['exact','group'].includes(packMatch.status)) continue;
+          let matched;
+          if (typeof options.assortmentMatcher==='function') {
+            try { matched=options.assortmentMatcher(wish,p); } catch { continue; }
+          } else {
+            const same=p.id===wish.id || p.groupId===wish.groupId;
+            matched=match(wish,{groupIds:same?[wish.groupId]:(p.offerGroupIds||[]),
+              variantIds:p.variantId?[p.variantId]:null,pack:p.pack,packUnconfirmed:p.packUnconfirmed});
+          }
+          if (['exact','group'].includes(matched?.status)) result.push({storeId:hint.storeId,productId:p.id,checkedAt,match:matched.status});
+        }
       }
+      return result.sort((a,b)=>a.storeId.localeCompare(b.storeId)||b.checkedAt.localeCompare(a.checkedAt)||String(a.productId).localeCompare(String(b.productId)));
     }
+    const existingVisits=[...visitMap.values()].sort((a,b)=>a.day.localeCompare(b.day)||a.store.id.localeCompare(b.store.id));
+    for (const entry of unknown) {
+      const hints=assortmentEvidence(entry.item);
+      entry.assortmentStoreIds=[...new Set(hints.map(hint=>hint.storeId))];
+      let visit=null,kind=null,evidence=null;
+      const explicit=options.targetStoreId&&enabled.has(options.targetStoreId)?visitMap.get(options.targetStoreId):null;
+      if (explicit) { visit=explicit;kind='explicit-target'; }
+      else {
+        visit=existingVisits.find(candidate=>hints.some(hint=>hint.storeId===candidate.store.id));
+        if (visit) { kind='assortment';evidence=hints.find(hint=>hint.storeId===visit.store.id); }
+        else if (!hints.length&&existingVisits.length===1) { visit=existingVisits[0];kind='single-visit'; }
+      }
+      if (!visit) {
+        if (hints.length) entry.reason='Passender Sortimentshinweis für einen ausgewählten, aber nicht eingeplanten Laden. Preis und Bestand bleiben offen.';
+        continue;
+      }
+      entry.assignedStoreId=visit.store.id;entry.assignedDay=visit.day;entry.assignmentKind=kind;
+      entry.assignmentReason=kind==='assortment'?'Passendes Produkt im geprüften Sortiment gelistet. Preis und Bestand vor Ort bleiben offen.'
+        :kind==='explicit-target'?'Dein ausdrücklich gewählter Einkaufsmarkt. Sortiment, Preis und Bestand sind damit nicht bestätigt.'
+        :'Zum einzigen eingeplanten Laden mitnehmen. Sortiment, Preis und Bestand sind damit nicht bestätigt.';
+      if (evidence) entry.assortmentEvidence=evidence;
+      visit.unpriced.push(entry);
+    }
+    for (const [id,visit] of visitMap) if (!visit.lines.length&&!visit.unpriced.length) visitMap.delete(id);
     const visits = [...visitMap.values()].sort((a, b) => a.day.localeCompare(b.day) || a.store.name.localeCompare(b.store.name));
     const visitDays = [...new Set(visits.map(visit => visit.day))].sort();
     const referenced = known.filter(l => Number.isSafeInteger(l.offer.referencePriceCents) && l.offer.referencePriceCents >= l.offer.priceCents);

@@ -18,8 +18,9 @@
     }
     return value;
   }
+  const packNumberFormatter = new Intl.NumberFormat('de-DE');
   function packText(pack) {
-    return exactPack(pack) ? new Intl.NumberFormat('de-DE').format(pack.min) + ' ' + pack.unit : 'Packungsgröße offen';
+    return exactPack(pack) ? packNumberFormatter.format(pack.min) + ' ' + pack.unit : 'Packungsgröße offen';
   }
   function photoMatches(product) {
     if (product.imageRepresentative || product.imageKind === 'group-representative') return false;
@@ -47,16 +48,15 @@
     if (/^landliebe butter(?: oder die streichzarte)?$/.test(title)) return 'Landliebe Butter';
     return null;
   }
-  function chosenProduct(itemProduct, offer, products = []) {
+  function choose(itemProduct, offer, candidatesFor) {
     const item = itemProduct || {}, selected = offer || {};
-    const catalog = products instanceof Map ? [...products.values()] : (Array.isArray(products) ? products : []);
     const validPack = !selected.packUnconfirmed && exactPack(selected.pack);
     const butter = validPack ? butterChoice(item, selected) : null;
     const target = {...selected,title:butter || selected.title || item.title || 'Produkt'};
     const ambiguous = !validPack || (!butter && multiple(target.title));
     let candidates = [];
     if (!ambiguous) {
-      candidates = [...catalog, item].filter(p => samePack(p.pack, selected.pack) && !multiple(p.title) && titleMatches(p,target));
+      candidates = [...candidatesFor(target), item].filter(p => samePack(p.pack, selected.pack) && !multiple(p.title) && titleMatches(p,target));
       // A precise wish must not acquire an unrelated variant merely because its title is similar.
       if (item.variantId && !butter) candidates = candidates.filter(p => p.id === selected.productId || p.variantId === item.variantId || (selected.variantIds || []).includes(p.variantId));
       candidates.sort((a,b) => Number(photoMatches(b)) - Number(photoMatches(a)) || Number(b.id === selected.productId) - Number(a.id === selected.productId));
@@ -73,5 +73,34 @@
     return {product,title,imageConfirmed:confirmed,ambiguous,
       label:ambiguous ? (!validPack ? 'Packung noch nicht eindeutig' : 'Sorte laut Angebot wählen') : (confirmed ? '' : 'Produktfoto fehlt')};
   }
-  return {chosenProduct};
+  function chosenProduct(itemProduct, offer, products = []) {
+    const catalog = products instanceof Map ? [...products.values()] : (Array.isArray(products) ? products : []);
+    return choose(itemProduct,offer,()=>catalog);
+  }
+  function createSelector(products = []) {
+    const catalog = products instanceof Map ? [...products.values()] : (Array.isArray(products) ? products : []);
+    const byName=new Map();
+    const sizeKey=pack=>pack.min+'\u0000'+pack.unit+'\u0000';
+    const add=(key,row)=>{if(!byName.has(key))byName.set(key,[]);byName.get(key).push(row);};
+    catalog.forEach((original,order)=>{
+      // Capture fields used for identity and photo validation. Rebuild this selector
+      // when a new catalogue arrives; saved list/offer snapshots are read per call.
+      const p={...original,...(original.pack?{pack:{...original.pack}}:{}),...(original.imagePack?{imagePack:{...original.imagePack}}:{})};
+      if(!exactPack(p.pack)||multiple(p.title))return;
+      const title=name(p),brand=norm(p.brand),row={p,order};
+      add(sizeKey(p.pack)+title,row);
+      if(brand&&title.startsWith(brand+' '))add(sizeKey(p.pack)+title.slice(brand.length+1),row);
+    });
+    return {chosenProduct:(item,offer)=>{
+      const result=choose(item,offer,target=>{
+        // titleMatches below still verifies brand and variant evidence. This index
+        // only removes candidates that the original full scan could never accept.
+        const rows=byName.get(sizeKey(target.pack)+name(target))||[];
+        return [...new Set(rows)].sort((a,b)=>a.order-b.order).map(row=>row.p);
+      });
+      if(result.product.imagePack)result.product.imagePack={...result.product.imagePack};
+      return result;
+    }};
+  }
+  return {chosenProduct,createSelector};
 });

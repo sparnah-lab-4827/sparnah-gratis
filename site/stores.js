@@ -20,5 +20,32 @@
       targetStoreId:settings.targetStoreId?aliases[settings.targetStoreId]||settings.targetStoreId:settings.targetStoreId,
       knownStoreIds:stores.map(s=>s.id)}};
   }
-  return {project};
+  function projectAssortment(assortment,stores){
+    // This audited importer reads ALDI SÜD's public category catalogue, without
+    // a selected branch. This is catalogue identity, never local stock or price.
+    const official=value=>{
+      try{
+        const u=new URL(value);
+        return u.protocol==='https:'&&u.hostname==='www.aldi-sued.de'&&!u.username&&!u.password&&!u.port&&!u.hash?u:null;
+      }catch{return null;}
+    };
+    const source=official(assortment?.sources?.aldi?.sourceUrl);
+    const targets=(stores||[]).filter(s=>s.retailerId==='aldi'&&official(s.url));
+    if(!source||source.pathname!=='/produkte'||source.search||targets.length!==1)return assortment;
+    const target=targets[0],products=(assortment.products||[]).map(p=>{
+      if(p.assortmentStoreId!=='aldi'||p.availabilityConfirmed!==false||
+        p.assortmentScope||p.scope||p.assortmentSourceStoreId||p.branchId||p.assortmentBranchId||
+        p.storeId||p.applicableStoreIds||(p.retailerId&&p.retailerId!=='aldi'))return p;
+      const product=official(p.assortmentSourceUrl),page=official(p.sourcePage),sku=String(p.retailerProductId||'');
+      if(!/^\d+$/.test(sku)||!String(p.id||'').startsWith('assortment:aldi:'+sku+':')||
+        !product||product.search||!product.pathname.startsWith('/produkt/')||!product.pathname.endsWith('-'+sku)||
+        !page||!/^\/produkte\/(?:[^/]+\/)+k\/\d+\/?$/.test(page.pathname)||
+        [...page.searchParams].some(([key,value])=>key!=='page'||!/^[1-9]\d*$/.test(value))||
+        page.searchParams.getAll('page').length>1)return p;
+      return {...p,assortmentStoreId:target.id,assortmentSourceStoreId:p.assortmentStoreId,
+        assortmentScope:'retailer-catalog',assortmentRetailerId:'aldi'};
+    });
+    return {...assortment,products};
+  }
+  return {project,projectAssortment};
 });

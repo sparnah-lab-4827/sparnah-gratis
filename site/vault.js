@@ -8,7 +8,7 @@
   'use strict';
   const ACCESS_KEY = 'sparnah-private-access-v1';
   const DATA_URL = 'data/private.enc.json';
-  const VERSION = '20261020-preisvergleich';
+  const VERSION = '20261020-fluessiger';
   const MAX_BYTES = 40 * 1024 * 1024;
   const object = value => value && typeof value === 'object' && !Array.isArray(value);
   const idValid = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);

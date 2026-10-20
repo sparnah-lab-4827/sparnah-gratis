@@ -60,8 +60,10 @@
 
   const ui = { tab: 'list', leafletMode:'today', query: '', searchStore:'all', searchCategory:'all', searchLimit:24, searchOpen: false, selected: -1, weekMode: model.weekMode==='next'?'next':'current', offerStore: 'all', offerQuery: '', brandQuery:'', brandStore:'all', brandOpen:false, brandSelected:-1, storeQuery:'', online: false, syncBusy: false, lastSynced: null, syncError: '', hideDone: false, health: IS_FILE ? 'standalone' : 'checking' };
   let toastTimer, memoKey = '', memoPlan, apiBusy = false;
-  let resolveChoice, priceGuide, selectedProductCache=new WeakMap(),searchMemo;
+  let resolveChoice, priceGuide, selectProduct, brandSearch, assortmentResolver, selectedProductCache=new WeakMap(),searchMemo,renderState=null;
+  let catalogProductIds=new Set(),indexedProductIds=new Set(),offersByGroup=new Map();
   const comparisonCache=new Map();
+  const matchingCache=new Map(),assortmentCache=new Map();
   let guideQuery='';
 
   function persist() {
@@ -77,7 +79,10 @@
         else { item.qty = Math.min(99, item.qty + (op.qty || 1)); item.checked = false; }
       } else if (item) {
         if (op.type === 'item.remove') item.deleted = true;
-        else if (!item.deleted && op.type === 'item.delta') item.qty = Math.min(99, Math.max(1, item.qty + op.delta));
+        else if (!item.deleted && op.type === 'item.delta') {
+          const qty=Math.min(99,Math.max(1,item.qty+op.delta));
+          if(qty!==item.qty){item.qty=qty;item.checked=false;}
+        }
         else if (!item.deleted && op.type === 'item.check') item.checked = op.checked;
         else if (!item.deleted && op.type === 'item.choice' && ['exact','cheapest'].includes(op.mode)) item.choiceMode = op.mode;
       }
@@ -85,29 +90,48 @@
     else if (op.type === 'offer.add') state.offers = state.offers.filter(o => o.id !== op.offer.id).concat(clone(op.offer));
     else if (op.type === 'offer.remove') state.offers = state.offers.filter(o => o.id !== op.offerId);
   }
-  function state() { return clone(model.base); }
+  function state() { return renderState || clone(model.base); }
   function perform(op, rerender = true) {
-    op.id = uid();
-    apply(model.base, op);
-    persist(); memoKey = ''; comparisonCache.clear();
-    if (['item.add','item.remove','offer.add','offer.remove'].includes(op.type)) reindex();
+    performMany([op],rerender);
+  }
+  function performMany(ops,rerender=true) {
+    const rebuild=ops.some(op=>op.type.startsWith('offer.') || op.type==='item.add'&&!indexedProductIds.has(op.itemId) || op.type==='item.remove'&&!catalogProductIds.has(op.itemId));
+    for(const op of ops){op.id=uid();apply(model.base,op);}
+    persist();memoKey='';
+    // Quantity, checkboxes and route preferences do not alter catalogue identity.
+    // Comparison keys already include quantity, product choice, markets and dates.
+    if(rebuild)reindex();
+    else if(ops.some(op=>op.type==='item.add'))comparisonCache.clear();
     if (rerender) render();
-    if(op.type==='settings'&&Array.isArray(op.settings?.enabledStores))void automaticUpdates?.selectionChanged();
-
+    if(ops.some(op=>op.type==='settings'&&Array.isArray(op.settings?.enabledStores)))void automaticUpdates?.selectionChanged();
   }
   function reindex(){
-    memoKey=''; comparisonCache.clear();
+    memoKey=''; comparisonCache.clear();matchingCache.clear();assortmentCache.clear();
     const settings=S.reconcileStores(model.base.settings,C.stores);
     if(JSON.stringify(settings)!==JSON.stringify(model.base.settings)){model.base.settings=settings;persist();}
-    const existingProducts=C.products.concat(assortment.products,Choices.referenceProducts(),model.base.items.filter(i=>!i.deleted).map(i=>i.product));
+    const catalogProducts=C.products.concat(assortment.products,Choices.referenceProducts());
+    catalogProductIds=new Set(catalogProducts.map(p=>p.id));
+    const existingProducts=catalogProducts.concat(model.base.items.filter(i=>!i.deleted).map(i=>i.product));
     searchIndex=S.build(existingProducts,Choices.basicWishes(existingProducts),Choices.householdWishes(existingProducts));
     // Keep stable wish IDs restorable even when an equivalent catalogue wish
     // replaces their search suggestion. Saved choices retain their own snapshot.
     for(const wish of [...Choices.basicWishes(),...Choices.householdWishes()])if(!searchIndex.byId.has(wish.id))searchIndex.byId.set(wish.id,wish);
     priceGuide=window.SparnahEstimates?.createEstimator(searchIndex.products);
     resolveChoice=Choices.createResolver(searchIndex.products);
+    selectProduct=Selection.createSelector(searchIndex.products);
+    indexedProductIds=new Set(searchIndex.products.map(p=>p.id));
     selectedProductCache=new WeakMap();searchMemo=null;
     preparedOffers=Choices.annotateOffers(E.expandOffers(C.offers.concat(model.base.offers),C.stores),searchIndex.products);
+    offersByGroup=new Map();
+    for(const offer of preparedOffers)for(const group of new Set(offer.groupIds||[])){
+      if(!offersByGroup.has(group))offersByGroup.set(group,[]);
+      offersByGroup.get(group).push(offer);
+    }
+    // Keep catalogue source filters unchanged; only the route resolver receives
+    // audited retailer-wide catalogue hints for the displayed shop.
+    const routeAssortment=window.SparnahStores.projectAssortment(assortment,C.stores);
+    assortmentResolver=S.createAssortmentHints(routeAssortment.products,{choices:Choices,products:searchIndex.products,engine:E});
+    brandSearch=S.createBrandSearch(searchIndex,preparedOffers.filter(o=>o.priceKind!=='regular'));
   }
   const product = id => searchIndex?.byId.get(id) || model.base.items.find(i=>i.id===id)?.product;
   const store = id => C.stores.find(s => s.id === (storeAliases[id]||id));
@@ -125,14 +149,15 @@
   function effectiveProduct(item) { return item.choiceMode==='cheapest' ? resolveChoice(item.product).product : item.product; }
   const priceKind = o => o.priceKind==='regular' ? 'Normalpreis' : o.verification==='household' ? 'Eigener Preis' : 'Angebot';
   const selectedProduct = line => {
-    if(!selectedProductCache.has(line))selectedProductCache.set(line,Selection.chosenProduct(line.item.product,line.offer,allProducts()));
+    if(!selectedProductCache.has(line))selectedProductCache.set(line,selectProduct.chosenProduct(line.item.product,line.offer));
     return selectedProductCache.get(line);
   };
   function priceComparison(item,settings) {
     const today=E.berlinToday(),week=weekStart();
     const key=JSON.stringify([item.id,item.qty,item.choiceMode,week,today,settings.enabledStores]);
     if(!comparisonCache.has(key)){
-      const effective=effectiveProduct(item),compared=E.compareStores(effective,offers(),C.stores,{
+      const effective=effectiveProduct(item),candidates=effective.groupId===item.product.groupId?offersByGroup.get(effective.groupId)||[]:[...new Set([...(offersByGroup.get(effective.groupId)||[]),...(offersByGroup.get(item.product.groupId)||[])])];
+      const compared=E.compareStores(effective,candidates,C.stores,{
         quantity:item.qty,weekStart:week,notBefore:today,enabledStores:settings.enabledStores,requestedProduct:item.product
       });
       for(const line of compared.ranked)line.item={...item,requestedProduct:item.product,product:effective};
@@ -145,8 +170,20 @@
     // Every state/catalog mutation invalidates memoKey; don't serialize all offers
     // just to reuse an unchanged plan while navigating or opening a product.
     const today=E.berlinToday(), week=weekStart(), key=week+'|'+today;
-    if (key !== memoKey) { const s=state();memoPlan = E.optimize(s.items.map(i=>({...i,requestedProduct:i.product,product:effectiveProduct(i)})), offers(), C.stores, { ...s.settings, weekStart:week, notBefore:today }); memoKey = key; }
+    if (key !== memoKey) {
+      const s=state(),items=s.items.map(i=>({...i,requestedProduct:i.product,product:effectiveProduct(i)}));
+      const hints=new Map(items.filter(i=>!i.deleted&&!i.checked).map(i=>[i.id,assortmentHints(i.requestedProduct||i.product,s.settings.enabledStores)]));
+      memoPlan=E.optimize(items,offers(),C.stores,{...s.settings,weekStart:week,notBefore:today,assortmentHints:hints,assortmentMatcher:assortmentResolver.match});memoKey=key;
+    }
     return memoPlan;
+  }
+  function assortmentHints(p,enabled=state().settings.enabledStores){
+    const key=JSON.stringify([p.id,p.groupId,p.variantId,p.pack,enabled]);
+    if(!assortmentCache.has(key)){
+      if(assortmentCache.size>=512)assortmentCache.clear();
+      assortmentCache.set(key,assortmentResolver.assortmentHints(p,{engine:E,storeIds:enabled}));
+    }
+    return assortmentCache.get(key);
   }
   function thumb(p, extra = '', resolved = false) {
     const current=searchIndex?.byId.get(p?.id);
@@ -195,14 +232,22 @@
     return `<button class="data-banner" data-action="sources">${icon('info')}<span><strong>${esc(label)}</strong><br class="mobile-only"><span class="desktop-only"> &nbsp;·&nbsp; </span>${failed ? `${failed} Händlerabruf(e) fehlgeschlagen · Details anzeigen` : 'Die Quellenabdeckung ist unvollständig · Datenstand ansehen'}</span>${icon('chevron','arrow')}</button>`;
   }
   function weekSwitch() {
-    const enabled=state().settings.enabledStores;
-    const counts=mode=>offers().filter(o=>enabled.includes(o.storeId)&&E.overlapsWeek(o,mode==='current'?E.mondayOf():E.nextMonday())&&E.offerUsable(o,Math.max(1,o.minQty||1))).length;
+    const enabled=state().settings.enabledStores,today=E.berlinToday(),starts={current:E.mondayOf(today),next:E.nextMonday(today)};
+    const counts=mode=>offers().filter(o=>enabled.includes(o.storeId)&&E.overlapsWeek(o,starts[mode])&&E.offerUsable(o,Math.max(1,o.minQty||1))).length;
     const count=counts(ui.weekMode),other=ui.weekMode==='current'?'next':'current',otherCount=counts(other);
     return `<div class="week-switch" aria-label="Planungswoche"><button class="chip ${ui.weekMode === 'current' ? 'selected' : ''}" aria-pressed="${ui.weekMode==='current'}" data-action="week" data-week="current">Diese Woche</button><button class="chip ${ui.weekMode === 'next' ? 'selected' : ''}" aria-pressed="${ui.weekMode==='next'}" data-action="week" data-week="next">Nächste Woche</button><span class="tiny muted">${weekText()} · ${enabled.length?count+' zugeordnete Preise':'Keine Märkte gewählt'}</span></div>${enabled.length&&!count?`<div class="notice week-notice"><strong>Für ${ui.weekMode==='next'?'nächste':'diese'} Woche sind noch keine verwendbaren Preise erfasst.</strong><p>Damit lässt sich noch kein günstigster Laden berechnen. Sortimentshinweise findest du trotzdem bei offenen Produkten.</p>${otherCount?`<button class="text-button" data-action="week" data-week="${other}">${otherCount} Angebote ${other==='current'?'dieser':'nächster'} Woche ansehen ${icon('arrow')}</button>`:''}</div>`:''}`;
   }
   function maxStoreSelector() { const s = state().settings; return `<div class="segmented" role="group" aria-label="Maximale Anzahl Geschäfte">${[1,2,3].map(n => `<button class="${s.maxStores === n ? 'selected' : ''}" aria-pressed="${s.maxStores === n}" data-action="max-stores" data-value="${n}">${n} ${n === 1 ? 'Laden' : 'Läden'}</button>`).join('')}</div>`; }
   function searchMarkup() { return `<div class="search-wrap"><div class="search-filters"><div class="search-filter-label">Katalogquelle${storePicker('search-store',[{id:'aldi',name:'ALDI',retailerId:'aldi'},{id:'kaufland',name:'Kaufland',retailerId:'kaufland'}],ui.searchStore,'Alle Produkte','all','Katalogquelle')}</div><label>Kategorie<select id="search-category" aria-label="Produktkategorie"><option value="all">Alle Kategorien</option>${searchIndex.categories.map(c=>`<option ${ui.searchCategory===c?'selected':''}>${esc(c)}</option>`).join('')}</select></label></div><div class="search-input-area"><div class="search-box">${icon('search')}<input id="search" type="search" autocomplete="off" spellcheck="false" placeholder="Produkt suchen, z. B. Milch …" value="${esc(ui.query)}" role="combobox" aria-label="Produkt suchen" aria-autocomplete="list" aria-controls="suggestions" aria-expanded="${ui.searchOpen}"><span class="search-shortcut">/</span></div><div id="suggestions" class="suggestions" role="listbox" aria-label="Produktvorschläge" hidden></div></div><p class="search-help">${icon('sparkle')} Marke, Sorte oder Packungsgröße suchen, z. B. Milch 1.000 ml.</p><p class="tiny muted">${allProducts().length.toLocaleString('de-DE')} erfasste Produkte · Händlerabdeckung unvollständig · <button class="text-button" data-action="sources">Quellen und Abdeckung</button>${assortmentError?' · '+esc(assortmentError):''}</p></div>`; }
-  function matching(p, qty = 1) { return E.bestOffers(p, offers(), { quantity: qty, weekStart: weekStart(), notBefore:E.berlinToday(), storeIds: state().settings.enabledStores }); }
+  function matching(p, qty = 1) {
+    const week=weekStart(),today=E.berlinToday(),enabled=state().settings.enabledStores;
+    const key=JSON.stringify([p.id,p.groupId,p.variantId,p.pack,p.compareByUnit,p.referencePack,qty,week,today,enabled]);
+    if(!matchingCache.has(key)){
+      if(matchingCache.size>=1024)matchingCache.clear();
+      matchingCache.set(key,E.bestOffers(p,offersByGroup.get(p.groupId)||[],{quantity:qty,weekStart:week,notBefore:today,storeIds:enabled}));
+    }
+    return matchingCache.get(key);
+  }
   function offerHint(p, qty = 1) {
     const found = matching(p, qty), first = found.find(x => x.match.status !== 'uncertain');
     if (first) return `<span class="offer-line">${badge(store(first.offer.storeId))}${esc(store(first.offer.storeId)?.name)} · ${E.money(first.offer.priceCents)} / Packung</span>`;
@@ -277,8 +322,8 @@
     return `<div class="page-heading"><div><div class="eyebrow">Entdecken & ergänzen</div><h1>Angebote deiner Märkte.</h1><p>Erfasste Angebote für deine ausgewählten Geschäfte.</p></div><button class="secondary" data-action="add-offer">${icon('plus')} Angebot ergänzen</button></div>${dataBanner()}${weekSwitch()}<div class="offer-toolbar"><input id="offer-search" type="search" aria-label="Angebote durchsuchen" placeholder="Angebote filtern …" value="${esc(ui.offerQuery)}">${storePicker('offer-store',availableStores,ui.offerStore,availableStores.length?'Alle Geschäfte mit Angeboten':'Keine Angebote erfasst')}</div><div class="section-head"><h3 id="offer-count" aria-live="polite">${found.length} Angebote erfasst</h3><button class="text-button" data-action="sources">Datenabdeckung ${icon('info')}</button></div><div class="offer-categories" id="offer-results">${offerResultsMarkup(found)}</div><div id="offer-empty" class="no-results" ${found.length ? 'hidden' : ''}>${icon('tag','big')}<h3 style="margin-top:12px">${hasSelectedStores()?'Hier fehlen noch Angebotsdaten.':'Noch keine Märkte gewählt.'}</h3><p style="margin-top:9px">${hasSelectedStores()?'Kein Treffer bedeutet nicht, dass es keine Angebote gibt.':'Wähle zuerst Märkte aus, deren Angebote du sehen möchtest.'}</p><button class="secondary" style="margin-top:18px" data-action="add-offer">${icon('plus')} Bestätigtes Angebot ergänzen</button></div><div class="help-inline">${icon('shield')} Angezeigt werden nur Preise ohne Karten, App-Coupons und Bonus-Gutschriften. Bilder einer Produktgruppe sind Beispiele, keine Bestätigung aller Sorten.</div>`;
   }
   function brandOptions(){return {engine:E,weekStart:weekStart(),storeIds:state().settings.enabledStores,storeId:ui.brandStore};}
-  function brandResults(){return S.brandOffers(searchIndex,offers().filter(o=>o.priceKind!=='regular'),ui.brandQuery,brandOptions());}
-  function brandChoices(){return S.brandSuggestions(searchIndex,offers().filter(o=>o.priceKind!=='regular'),ui.brandQuery,brandOptions());}
+  function brandResults(){return brandSearch.brandOffers(ui.brandQuery,brandOptions());}
+  function brandChoices(){return brandSearch.brandSuggestions(ui.brandQuery,brandOptions());}
   function brandEmpty(){return !hasSelectedStores()?'Wähle zuerst Märkte aus, um deren Markenangebote zu sehen.':ui.brandQuery.trim()?'Für diese Marke fehlen hier bestätigte Angebote in der ausgewählten Woche.':'Gib eine Marke ein oder wähle einen Vorschlag. Auch Marken ohne Wochenangebote werden vorgeschlagen.';}
   function brandResultsMarkup(){const found=brandResults();return `<div class="section-head"><h2 id="brand-count" aria-live="polite">${found.length} Markenangebote erfasst</h2><button class="text-button" data-action="sources">Quellen prüfen ${icon('info')}</button></div><div id="brand-empty" class="notice" ${found.length?'hidden':''}><p id="brand-empty-message">${esc(brandEmpty())}</p><p>Kein Treffer bedeutet nicht, dass die Marke nirgends im Angebot ist. Die Händlerabdeckung ist unvollständig.</p></div><div class="offer-grid" id="brand-results">${found.map(offerCard).join('')}</div>`;}
   function brandsPage(){
@@ -297,16 +342,17 @@
   function selectBrand(name){ui.brandQuery=name;ui.brandOpen=false;ui.brandSelected=-1;$('brand-search').value=name;updateBrandResults();$('brand-search').focus({preventScroll:true});ui.brandOpen=false;renderBrandSuggestions();}
   function updateBrandResults(){$('brand-content').innerHTML=brandResultsMarkup();renderBrandSuggestions();}
   function assortmentHintMarkup(item){
-    const possible=matching(item.product,item.qty).filter(x=>x.match.status==='uncertain');
+    const wish=item.requestedProduct||item.product;
+    const possible=matching(wish,item.qty).filter(x=>x.match.status==='uncertain');
     const priceHints=possible.length?`<div class="assortment-hints"><strong class="small">Mögliches Angebot – Packung oder Sorte noch offen</strong>${possible.map(x=>`<div class="assortment-hint">${badge(store(x.offer.storeId))}<div><strong>${esc(store(x.offer.storeId)?.name)} · ${E.money(x.offer.priceCents)}</strong><p>${esc(x.offer.title)} · ${priceKind(x.offer)}</p><p class="tiny muted">${esc(x.match.reasons.join('. '))}. Deshalb noch nicht in der Summe enthalten.</p><a class="text-button" href="${esc(safeUrl(x.offer.sourceUrl))}" target="_blank" rel="noopener noreferrer">Angebot beim Händler ansehen ↗</a></div></div>`).join('')}</div>`:'';
-    const hints=S.assortmentHints(item.product,assortment.products,{engine:E,storeIds:state().settings.enabledStores});
+    const hints=assortmentHints(wish);
     if(!hints.length)return priceHints||`<p class="tiny muted">Auch kein passender Sortimentsnachweis erfasst. <button class="text-button" data-action="tab" data-tab="stores">Geschäfte und Quellen ansehen</button></p>`;
     return priceHints+`<div class="assortment-hints"><strong class="small">Händlerhinweis aus dem Sortiment</strong>${hints.map(h=>{const st=store(h.storeId),p=h.products[0];return `<div class="assortment-hint">${badge(st)}<div><strong>${esc(st?.name||h.storeId)}</strong><p>${esc(p.title)} · ${E.packLabel(p.pack)}</p><p class="tiny muted">Produkt online gelistet · geprüft ${esc(p.assortmentCheckedAt)}. Preis, Wochenangebot und Filialbestand offen.</p><a class="text-button" href="${esc(safeUrl(p.assortmentSourceUrl))}" target="_blank" rel="noopener noreferrer">Produkt beim Händler prüfen ↗</a></div></div>`;}).join('')}</div>`;
   }
   function storeRows(){
-    const query=normalize(ui.storeQuery),enabled=state().settings.enabledStores;
+    const query=normalize(ui.storeQuery),enabled=state().settings.enabledStores,week=weekStart();
     return C.stores.filter(st=>normalize(st.name).includes(query)).map(st=>{
-      const count=offers().filter(o=>o.storeId===st.id&&E.overlapsWeek(o,weekStart())&&E.offerUsable(o,Math.max(1,o.minQty||1))).length,src=sourceStatusFor(st);
+      const count=offers().filter(o=>o.storeId===st.id&&E.overlapsWeek(o,week)&&E.offerUsable(o,Math.max(1,o.minQty||1))).length,src=sourceStatusFor(st);
       return `<article class="store-directory-card"><div class="row">${badge(st)}<div class="grow"><h2>${esc(st.name)}</h2><p></p></div><label class="store-enable"><input type="checkbox" aria-label="${esc(st.name)} einplanen" class="store-toggle" data-store="${st.id}" ${enabled.includes(st.id)?'checked':''}> Einplanen</label></div><p class="small">${esc(st.type||'Lebensmittelgeschäft')} · Filiale ${st.verifiedAt?'geprüft am '+esc(st.verifiedAt):'noch nicht aktuell geprüft'}</p>${st.temporaryClosureUntil&&st.temporaryClosureUntil>=E.berlinToday()?`<p class="notice">Vorübergehend geschlossen bis einschließlich ${E.shortDate(st.temporaryClosureUntil)} – wird in diesem Zeitraum nicht eingeplant.</p>`:''}<p class="small"><strong>${count} erfasste Preise ${weekName().toLowerCase()}</strong></p><p class="tiny muted">${esc(src?.message||'Noch kein automatischer Angebotsabruf eingerichtet. Filiale bekannt; Angebotspreise und Bestand nicht bestätigt.')}</p><div class="row"><a class="text-button" href="${esc(storeUrl(st.url))}" target="_blank" rel="noopener noreferrer">Angebote prüfen ↗</a></div></article>`;
     }).join('')||'<p class="notice">Kein erfasstes Geschäft passt zu dieser Suche.</p>';
   }
@@ -338,7 +384,8 @@
   }
   function unpricedLine(u,assigned=false) {
     const wish=u.item.requestedProduct||u.item.product;
-    return `<div class="${assigned?'visit-line unpriced-line':'unknown-line'}">${thumb(wish)}<div class="grow"><strong class="small">${u.item.qty} × ${esc(wish.title)}</strong><p class="small muted">${assigned?'Hier mitkaufen · Preis noch offen. Verfügbarkeit nicht bestätigt.':esc(u.reason)}</p>${estimateMarkup(u.item)}<details class="unpriced-details"><summary>Details und mögliche Preise</summary>${assortmentHintMarkup(u.item)}<button class="text-button" data-action="product" data-id="${esc(u.item.id)}">Alle erfassten Preise ansehen</button></details></div><span class="price-open">${estimated(u.item)?'Händlerpreis offen':'Preis offen'}</span></div>`;
+    const assignment=u.assignmentKind==='assortment'?'Im Sortiment erfasst · Händlerpreis offen':u.assignmentKind==='explicit-target'?'Dein Zielmarkt · Sortiment unbestätigt':'Hier mitkaufen · Sortiment unbestätigt';
+    return `<div class="${assigned?'visit-line unpriced-line':'unknown-line'}">${thumb(wish)}<div class="grow"><strong class="small">${u.item.qty} × ${esc(wish.title)}</strong><p class="small muted">${assigned?assignment:esc(u.reason)}</p>${estimateMarkup(u.item)}<details class="unpriced-details"><summary>Details und mögliche Preise</summary>${assigned?`<p class="tiny muted">${esc(u.assignmentReason||'Preis und Bestand vor Ort sind nicht bestätigt.')}${u.assortmentEvidence?' Geprüft am '+esc(u.assortmentEvidence.checkedAt)+'.':''}</p>`:''}${assortmentHintMarkup(u.item)}<button class="text-button" data-action="product" data-id="${esc(u.item.id)}">Alle erfassten Preise ansehen</button></details></div><span class="price-open">${estimated(u.item)?'Händlerpreis offen':'Preis offen'}</span></div>`;
   }
   function estimated(item) {
     return hasSelectedStores()?priceGuide?.estimate(item.requestedProduct||item.product,item.qty,E.berlinToday()):null;
@@ -388,9 +435,9 @@
       const start=`<button class="primary" data-action="start-shopping" data-store="${esc(v.store.id)}" data-day="${esc(v.day)}" aria-label="Einkauf bei ${esc(v.store.name)} am ${esc(E.shortDate(v.day,true))} starten">${icon('bag')} Einkauf starten</button>`;
       html+=`<article class="plan-visit"><header class="visit-head"><span class="visit-number">${index+1}</span>${badge(v.store)}<div class="grow"><h3>${esc(v.store.name)}</h3><div class="day">${E.shortDate(v.day,true)} · ${count} Position${count===1?'':'en'}</div></div><div class="total">${v.lines.length?E.money(v.total):'Preis offen'}${open.length?'<small>Gesamtsumme offen</small>':''}</div></header><div class="visit-start-top">${start}</div>${v.lines.map(pricedLine).join('')}${open.map(u=>unpricedLine(u,true)).join('')}<footer class="visit-footer">${start}<button class="text-button" data-action="edit-market" data-store="${esc(v.store.id)}">${icon('settings')} Marktplan vorher anpassen</button><span>${v.deposit?` · + ${E.money(v.deposit)} Pfand`:''}</span></footer></article>`;
     }
-    if(unassigned.length)html+=`<section class="unknown-card"><h3>Einkaufsladen noch wählen</h3><p class="small muted">Unter „Einstellungen → Einkaufsplanung“ kannst du diese Produkte einem Laden zuordnen. Die Katalogquelle am Produkt ist keine Ladenwahl. Preise bleiben bis zu einem passenden Nachweis offen.</p>${unassigned.map(u=>unpricedLine(u)).join('')}</section>`;
+    if(unassigned.length)html+=`<section class="unknown-card"><h3>Noch keinem Laden zugeordnet</h3><p class="small muted">Für diese Produkte fehlt ein passender Sortimentshinweis bei den geplanten Läden. Prüfe die Händlerhinweise unten oder ändere deine Einkaufsplanung. Preise und Bestand bleiben offen.</p>${unassigned.map(u=>unpricedLine(u)).join('')}</section>`;
     html+=`<details class="method plan-data-details"><summary>Datenstand und Planungsdetails</summary>${dataBanner()}${comparisonNote}<p>${p.complete?`Alle ${p.count} Positionen mit Preis eingeplant.`:allInOne?`Deine ganze Einkaufsliste gehört zu diesem Laden. ${p.coverage} von ${p.count} Preisen sind bekannt.`:`${p.coverage} von ${p.count} Positionen mit passendem Preis gefunden.`} ${p.complete?'Verglichen werden die erfassten Angebote und Normalpreise.':'Produkte ohne bestätigten Händlerpreis fehlen in der belegten Summe; passende Richtwerte ergänzen das geschätzte Budget.'}</p><button class="text-button" data-action="tab" data-tab="settings">${icon('settings')} Einkaufsplanung in den Einstellungen ändern</button></details>`;
-    html+=`<div class="help-inline">${icon('info')} ${p.complete?'Einkaufsplan anhand erfasster Preise und deiner Vorgaben. Unbekannte Händlerpreise und Fahrtkosten sind nicht enthalten.':p.coverage?'Die Ladenwahl richtet sich nach den bekannten Preisen. Der günstigste vollständige Einkauf ist erst vergleichbar, wenn alle Preise bekannt sind.':p.visits.length?'Dieser Laden wurde aus deiner Auswahl übernommen. Ohne passende Preise kann kein günstigster Einkauf ermittelt werden.':'Wähle einen einzelnen Laden, um dort die ganze Liste mitzunehmen. Ohne passende Preise kann kein günstigster Laden ermittelt werden.'}</div><div class="plan-actions"><button class="secondary" data-action="tab" data-tab="list">Produktauswahl ändern</button><button class="secondary" data-action="share-plan">${icon('share')} Plan teilen</button><button class="secondary" data-action="print">${icon('print')} Drucken</button><button class="secondary" data-action="add-offer">${icon('plus')} Preis ergänzen</button></div><details class="method"><summary>So wird dieser Plan berechnet</summary><p>Verglichen werden erfasste Angebote und geprüfte Normalpreise an den verbleibenden Tagen der ausgewählten Woche, Montag bis Samstag. Tagespreise zählen nur am geprüften Tag. Pro Laden ist höchstens ein Besuch vorgesehen. ${settings.allowSplitDays?'Verschiedene Einkaufstage sind erlaubt.':'Alle Besuche finden am selben Tag statt.'}</p><p>Vorrang hat eine möglichst vollständige Preisabdeckung. Bei gleicher Abdeckung derselben Produkte entscheidet der kleinste Vergleichswert: Passende Größenvarianten und Markenalternativen werden anhand des Grundpreises auf eine gemeinsame Wunschmenge umgerechnet, feste gleiche Packungen zum tatsächlichen Preis. Danach entscheiden weniger Geschäfte, weniger Tage und der frühere Termin. Unterschiedliche Teilpläne mit gleich vielen Produkten folgen der Reihenfolge deiner Liste.</p><p>„Meine Auswahl“ behält deinen Produktwunsch. „Günstigstes passendes Produkt“ erlaubt die beim Produkt beschriebenen Alternativen. Bekannte Eigenschaften bleiben erhalten. Bei ausdrücklich beschriebenen Markenalternativen sind bis zu 20 % kleinere oder größere Packungen erlaubt. Die Packungsanzahl bleibt gleich, abweichende Größen werden angezeigt. Unklare Sorten werden nicht als passend berechnet. Keine geschätzten Preise, Kundenkarten, App-Coupons oder automatische Mehrmengen.</p><p>Offene Produkte beim einzigen geplanten Laden sind Einkaufswünsche, keine Bestandsbestätigung. Preise ohne passenden Beleg bleiben aus der Summe. Quellenabdeckung: unvollständig, Stand ${esc(C.observedAt)}. Sonderöffnungszeiten und Verfügbarkeit bitte vor der Fahrt auf der Filialseite prüfen.</p></details>`;
+    html+=`<div class="help-inline">${icon('info')} ${p.complete?'Einkaufsplan anhand erfasster Preise und deiner Vorgaben. Unbekannte Händlerpreise und Fahrtkosten sind nicht enthalten.':p.coverage?'Die Ladenwahl richtet sich nach den bekannten Preisen. Der günstigste vollständige Einkauf ist erst vergleichbar, wenn alle Preise bekannt sind.':p.visits.length?'Dieser Laden wurde aus deiner Auswahl übernommen. Ohne passende Preise kann kein günstigster Einkauf ermittelt werden.':'Wähle einen einzelnen Laden, um dort die ganze Liste mitzunehmen. Ohne passende Preise kann kein günstigster Laden ermittelt werden.'}</div><div class="plan-actions"><button class="secondary" data-action="tab" data-tab="list">Produktauswahl ändern</button><button class="secondary" data-action="share-plan">${icon('share')} Plan teilen</button><button class="secondary" data-action="print">${icon('print')} Drucken</button><button class="secondary" data-action="add-offer">${icon('plus')} Preis ergänzen</button></div><details class="method"><summary>So wird dieser Plan berechnet</summary><p>Verglichen werden erfasste Angebote und geprüfte Normalpreise an den verbleibenden Tagen der ausgewählten Woche, Montag bis Samstag. Tagespreise zählen nur am geprüften Tag. Pro Laden ist höchstens ein Besuch vorgesehen. ${settings.allowSplitDays?'Verschiedene Einkaufstage sind erlaubt.':'Alle Besuche finden am selben Tag statt.'}</p><p>Vorrang hat eine möglichst vollständige Preisabdeckung. Bei gleicher Abdeckung derselben Produkte entscheidet der kleinste Vergleichswert: Passende Größenvarianten und Markenalternativen werden anhand des Grundpreises auf eine gemeinsame Wunschmenge umgerechnet, feste gleiche Packungen zum tatsächlichen Preis. Danach entscheiden weniger Geschäfte, weniger Tage und der frühere Termin. Unterschiedliche Teilpläne mit gleich vielen Produkten folgen der Reihenfolge deiner Liste.</p><p>„Meine Auswahl“ behält deinen Produktwunsch. „Günstigstes passendes Produkt“ erlaubt die beim Produkt beschriebenen Alternativen. Bekannte Eigenschaften bleiben erhalten. Bei ausdrücklich beschriebenen Markenalternativen sind bis zu 20 % kleinere oder größere Packungen erlaubt. Die Packungsanzahl bleibt gleich, abweichende Größen werden angezeigt. Unklare Sorten werden nicht als passend berechnet. Keine geschätzten Preise, Kundenkarten, App-Coupons oder automatische Mehrmengen.</p><p>Offene Produkte werden möglichst einem bereits geplanten Laden mit passendem Sortimentsnachweis zugeordnet. Dafür zählen bestätigte Packungen und Quellenprüfungen der letzten 30 Tage. Ein ausdrücklich gesetzter Zielmarkt hat Vorrang. Ohne passenden Nachweis bleibt eine Zuordnung ein Einkaufswunsch, keine Bestandsbestätigung. Preise ohne passenden Beleg bleiben aus der Summe. Quellenabdeckung: unvollständig, Stand ${esc(C.observedAt)}. Sonderöffnungszeiten und Verfügbarkeit bitte vor der Fahrt auf der Filialseite prüfen.</p></details>`;
     return html;
   }
   function shoppingSession() {
@@ -463,16 +510,20 @@
     return `<section class="settings-card market-settings"><h2>Deine Marktpläne</h2><p class="small muted">Lege die Reihenfolge der Bereiche je Laden fest. Beim Einkauf werden deine Produkte entsprechend sortiert.</p>${shops.map(s=>`<button class="secondary wide" data-action="edit-market" data-store="${esc(s.id)}">${badge(s)} Marktplan für ${esc(s.name)} anpassen</button>`).join('')||'<p class="small">Wähle zuerst deine Läden.</p>'}</section>`;
   }
   function settingsPage() {
-    const s=state().settings;
-    return `<div class="page-heading"><div><div class="eyebrow">Deine Sparnah-App</div><h1>Einfach. Kostenlos. Lokal.</h1><p>Deine Liste auf diesem Gerät · Angebotsdaten privat freigegeben.</p></div></div><div class="settings-grid"><div class="stack"><section class="settings-card"><h2>Einkaufsplanung</h2>${destinationSelector(s)}<span class="field-label">Höchstens so viele Geschäfte</span>${maxStoreSelector()}<div class="settings-row"><div><h3>Mehrere Einkaufstage</h3><p>Erlaubt verschiedene Angebotstage bei höchstens einem Besuch je Laden.</p></div><label class="switch"><input id="split-days" type="checkbox" ${s.allowSplitDays ? 'checked' : ''}><span></span></label></div><div class="settings-row"><div><h3>Kundenkarten und App-Rabatte</h3><p>Immer ausgeschlossen. Kein Bonus-Abzug.</p></div>${icon('shield')}</div></section><section class="settings-card"><h2>Privater Zugriff</h2><p class="small muted">Die Freigabe bleibt auf diesem Gerät. Mit der Zugriffsdatei kannst du auch dein Handy freigeben. Sie gehört nicht in öffentliche Nachrichten oder ins Repository.</p><div class="stack"><button class="secondary wide" data-action="export-access">${icon('download')} Zugriffsdatei für ein anderes Gerät</button><button class="secondary wide" data-action="lock-access">${icon('shield')} Auf diesem Gerät sperren</button></div><p class="small muted">Deine Einkaufsliste und Marktauswahl bleiben beim Sperren erhalten. Zum Öffnen brauchst du erneut die Zugriffsdatei.</p></section><section class="settings-card"><h2>Auf deinem Android-Handy</h2><button class="secondary wide" data-action="install">${icon('download')} Als App installieren</button><div class="settings-row"><div><h3>Externe Produktbilder</h3><p>Bei vorhandener Quelle, sonst Symbolbilder.</p></div><label class="switch"><input type="checkbox" id="photos" ${model.photos!==false?'checked':''}><span></span></label></div></section></div><div class="stack"><section class="settings-card"><h2>Deine Marktauswahl</h2><button class="text-button" data-action="tab" data-tab="stores">${icon('pin')} Alle Läden und Datenabdeckung ansehen</button><p class="small muted">Angebote und geprüfte Normalpreise fließen in die Summe ein. Bei einem Laden bleibt die ganze Einkaufsliste zusammen; fehlende Preise bleiben offen. Jeder Händler erscheint einmal.</p>${C.stores.map(st=>`<div class="store-setting"><input type="checkbox" aria-label="${esc(st.name)} einplanen" class="store-toggle" data-store="${st.id}" ${s.enabledStores.includes(st.id)?'checked':''}>${badge(st)}<span class="grow"><strong>${esc(st.name)}</strong><small>${offers().filter(o=>o.storeId===st.id&&E.overlapsWeek(o,weekStart())).length} erfasste Preise ${weekName().toLowerCase()}</small></span></div>`).join('')}</section><section class="settings-card"><h2>Liste und Angebotsdaten</h2><div class="stack"><button class="secondary wide" data-action="refresh-offers">${icon('refresh')} Online-Daten neu laden</button><button class="secondary wide" data-action="sources">${icon('info')} Datenstand und Quellen</button><button class="secondary wide" data-action="backup">${icon('download')} Liste sichern</button><button class="secondary wide" data-action="import-backup">${icon('upload')} Sicherung einlesen</button><button class="secondary wide" data-action="add-offer">${icon('plus')} Ein Angebot ergänzen</button></div><div class="notice">Angebote und Prospekte werden zweimal täglich zur Prüfung abgerufen. Beim Start, Wiederöffnen und nach Wiederherstellung der Verbindung lädt Sparnah den neuesten veröffentlichten Stand. Anzeige, Sparplan und Fehlermeldungen berücksichtigen deine ausgewählten Läden. Die Auswahl bleibt auf deinem Gerät. Deine Einkaufsliste bleibt ausschließlich im Speicher dieses Handys; sichere sie gelegentlich.</div></section></div></div><div class="settings-footer">Sparnah · kostenlose GitHub-Pages-Ausgabe · Kein Abo, keine eingebettete Werbung.<br><button data-action="privacy">Datenschutz und Datenstand</button></div>`;
+    const s=state().settings,week=weekStart();
+    return `<div class="page-heading"><div><div class="eyebrow">Deine Sparnah-App</div><h1>Einfach. Kostenlos. Lokal.</h1><p>Deine Liste auf diesem Gerät · Angebotsdaten privat freigegeben.</p></div></div><div class="settings-grid"><div class="stack"><section class="settings-card"><h2>Einkaufsplanung</h2>${destinationSelector(s)}<span class="field-label">Höchstens so viele Geschäfte</span>${maxStoreSelector()}<div class="settings-row"><div><h3>Mehrere Einkaufstage</h3><p>Erlaubt verschiedene Angebotstage bei höchstens einem Besuch je Laden.</p></div><label class="switch"><input id="split-days" type="checkbox" ${s.allowSplitDays ? 'checked' : ''}><span></span></label></div><div class="settings-row"><div><h3>Kundenkarten und App-Rabatte</h3><p>Immer ausgeschlossen. Kein Bonus-Abzug.</p></div>${icon('shield')}</div></section><section class="settings-card"><h2>Privater Zugriff</h2><p class="small muted">Die Freigabe bleibt auf diesem Gerät. Mit der Zugriffsdatei kannst du auch dein Handy freigeben. Sie gehört nicht in öffentliche Nachrichten oder ins Repository.</p><div class="stack"><button class="secondary wide" data-action="export-access">${icon('download')} Zugriffsdatei für ein anderes Gerät</button><button class="secondary wide" data-action="lock-access">${icon('shield')} Auf diesem Gerät sperren</button></div><p class="small muted">Deine Einkaufsliste und Marktauswahl bleiben beim Sperren erhalten. Zum Öffnen brauchst du erneut die Zugriffsdatei.</p></section><section class="settings-card"><h2>Auf deinem Android-Handy</h2><button class="secondary wide" data-action="install">${icon('download')} Als App installieren</button><div class="settings-row"><div><h3>Externe Produktbilder</h3><p>Bei vorhandener Quelle, sonst Symbolbilder.</p></div><label class="switch"><input type="checkbox" id="photos" ${model.photos!==false?'checked':''}><span></span></label></div></section></div><div class="stack"><section class="settings-card"><h2>Deine Marktauswahl</h2><button class="text-button" data-action="tab" data-tab="stores">${icon('pin')} Alle Läden und Datenabdeckung ansehen</button><p class="small muted">Angebote und geprüfte Normalpreise fließen in die Summe ein. Offene Preise werden passenden geplanten Märkten zugeordnet, wenn ein aktueller Sortimentshinweis vorliegt. Bei einem ausdrücklich gewählten Zielmarkt bleibt die Liste dort zusammen. Jeder Händler erscheint einmal.</p>${C.stores.map(st=>`<div class="store-setting"><input type="checkbox" aria-label="${esc(st.name)} einplanen" class="store-toggle" data-store="${st.id}" ${s.enabledStores.includes(st.id)?'checked':''}>${badge(st)}<span class="grow"><strong>${esc(st.name)}</strong><small>${offers().filter(o=>o.storeId===st.id&&E.overlapsWeek(o,week)).length} erfasste Preise ${weekName().toLowerCase()}</small></span></div>`).join('')}</section><section class="settings-card"><h2>Liste und Angebotsdaten</h2><div class="stack"><button class="secondary wide" data-action="refresh-offers">${icon('refresh')} Online-Daten neu laden</button><button class="secondary wide" data-action="sources">${icon('info')} Datenstand und Quellen</button><button class="secondary wide" data-action="backup">${icon('download')} Liste sichern</button><button class="secondary wide" data-action="import-backup">${icon('upload')} Sicherung einlesen</button><button class="secondary wide" data-action="add-offer">${icon('plus')} Ein Angebot ergänzen</button></div><div class="notice">Angebote und Prospekte werden zweimal täglich zur Prüfung abgerufen. Beim Start, Wiederöffnen und nach Wiederherstellung der Verbindung lädt Sparnah den neuesten veröffentlichten Stand. Anzeige, Sparplan und Fehlermeldungen berücksichtigen deine ausgewählten Läden. Die Auswahl bleibt auf deinem Gerät. Deine Einkaufsliste bleibt ausschließlich im Speicher dieses Handys; sichere sie gelegentlich.</div></section></div></div><div class="settings-footer">Sparnah · kostenlose GitHub-Pages-Ausgabe · Kein Abo, keine eingebettete Werbung.<br><button data-action="privacy">Datenschutz und Datenstand</button></div>`;
   }
   function render() {
+    const previous=renderState;
+    renderState=clone(model.base);
+    try {
     const focused = document.activeElement?.id;
     const pos = ['search','brand-search','store-search'].includes(focused) ? $(focused)?.selectionStart : null;
     renderHeader();
     $('main').innerHTML = (['list','plan','offers','brands','leaflets'].includes(ui.tab)?marketSelectionPrompt():'') + (privateDataWarning ? `<div class="offline-banner" role="status">${esc(privateDataWarning)}</div>` : '') + (!storageAvailable ? '<div class="offline-banner">Speicherung im Browser eingeschränkt. Bitte deine Liste regelmäßig exportieren.</div>' : '') + (['list','plan'].includes(ui.tab)?resumeShopping():'') + (ui.tab === 'shopping' ? shoppingPage() : ui.tab === 'market-layout' ? marketEditor() : ui.tab === 'list' ? listPage() : ui.tab === 'offers' ? offersPage() : ui.tab === 'brands' ? brandsPage() : ui.tab === 'leaflets' ? leafletsPage() : ui.tab === 'plan' ? planPage() : ui.tab === 'stores' ? storesPage() : settingsPage()+marketSettings()+estimateGuide());
     if(ui.tab==='brands'){renderBrandSuggestions();if(focused==='brand-search'){$('brand-search').focus({preventScroll:true});if(pos!==null)try{$('brand-search').setSelectionRange(pos,pos);}catch{}}}
     if (ui.tab === 'list') { renderSuggestions(); if (focused === 'search') { $('search').focus({preventScroll:true}); if (pos !== null) try { $('search').setSelectionRange(pos,pos); } catch {} } }
+    } finally {renderState=previous;}
   }
   function searchResult(){
     const key=JSON.stringify([ui.query,ui.searchStore,ui.searchCategory,ui.searchLimit]);
@@ -485,10 +536,10 @@
   }
   function renderSuggestions() {
     if (!$('suggestions')) return;
-    const results = findProducts();
     $('search').setAttribute('aria-expanded', String(ui.searchOpen));
     $('suggestions').hidden = !ui.searchOpen;
     if (!ui.searchOpen) return;
+    const results = findProducts();
     $('suggestions').innerHTML = `<div class="suggestions-label">${ui.query.trim() ? 'Passende Produkte' : 'Produktvorschläge'}</div>` + results.map((p,i) => {const best=matching(p).find(o=>o.match.status!=='uncertain'); return `<button class="suggestion" role="option" id="suggestion-${i}" aria-selected="${ui.selected === i}" data-action="add-product" data-id="${esc(p.id)}">${thumb(p)}<span class="grow"><span class="name">${esc(p.title)}</span><span class="product-sub" style="display:block">${esc(productSubtitle(p))}</span></span>${best ? `<span class="price">${E.money(best.offer.priceCents)}</span>` : ''}<span class="suggestion-add">${icon('plus')}</span></button>`;}).join('') + (ui.query.trim() ? `<button class="suggestion" role="option" id="suggestion-${results.length}" aria-selected="${ui.selected === results.length}" data-action="custom-product"><span class="planner-icon">${icon('plus')}</span><span class="grow"><span class="name">„${esc(ui.query.trim())}“ selbst hinzufügen</span><span class="product-sub" style="display:block">Ohne automatische Angebotszuordnung</span></span></button>` : '') + (searchResult().total>ui.searchLimit&&(ui.query.trim()||ui.searchStore!=='all'||ui.searchCategory!=='all')?`<button class="secondary wide" data-action="more-products">Mehr anzeigen (${Math.min(ui.searchLimit,searchResult().total)} von ${searchResult().total})</button>`:'') + `<div class="suggestions-label" style="text-transform:none;letter-spacing:0">Die Quelle ist keine Ladenbindung. Andere Händler können dieses Produkt ebenfalls führen; Bestand und Preise sind nicht vollständig erfasst.</div>`;
     if (ui.selected >= 0) $('search').setAttribute('aria-activedescendant',`suggestion-${ui.selected}`); else $('search').removeAttribute('aria-activedescendant');
   }
@@ -578,7 +629,7 @@
   function planText(){
     const p=getPlan();if(p.empty)return 'Deine Einkaufsliste ist noch leer.';
     const pending=p.unknown.filter(u=>!u.assignedStoreId);
-    return `Sparnah · ${weekText()}\n${p.complete?'Gesamtpreis':'Bekannte Zwischensumme'}: ${p.coverage?E.money(p.total):'Preise noch offen'}\n${p.coverage} von ${p.count} Preisen bekannt.${p.deposit?'\nPfand zusätzlich: '+E.money(p.deposit):''}\n\n${p.visits.map(v=>`${E.shortDate(v.day,true)}: ${v.store.name}\n${v.lines.map(l=>`• ${l.item.qty} × ${selectedProduct(l).title}: ${E.money(l.cost)} (${priceKind(l.offer)}, ${E.packLabel(l.offer.pack)}${packChange(l)?'; '+packChange(l):''})`).join('\n')}${(v.unpriced||[]).map(u=>`\n• ${u.item.qty} × ${(u.item.requestedProduct||u.item.product).title}: hier mitkaufen, ${estimateText(u.item)}, Verfügbarkeit nicht bestätigt`).join('')}`).join('\n\n')}${pending.length?'\n\nNoch keinem Laden zugeordnet:\n'+pending.map(u=>`• ${u.item.qty} × ${(u.item.requestedProduct||u.item.product).title}: ${u.reason}; ${estimateText(u.item)}`).join('\n'):''}${priceGuide?.summarize(p.unknown,E.berlinToday()).count?'\n\nGeschätzte '+(priceGuide.summarize(p.unknown,E.berlinToday()).remaining?'Teilsumme':'Budgetsumme')+': ca. '+E.money(p.total+priceGuide.summarize(p.unknown,E.berlinToday()).total)+' (belegte Preise plus Richtwerte, ohne Pfand).':''}\n\nBelegte Zwischensumme nur aus erfassten Preisen, ohne Fahrtkosten. ${p.complete?'':'Offene Preise fehlen in der Summe. '}Bestand vor Ort nicht bestätigt.`;
+    return `Sparnah · ${weekText()}\n${p.complete?'Gesamtpreis':'Bekannte Zwischensumme'}: ${p.coverage?E.money(p.total):'Preise noch offen'}\n${p.coverage} von ${p.count} Preisen bekannt.${p.deposit?'\nPfand zusätzlich: '+E.money(p.deposit):''}\n\n${p.visits.map(v=>`${E.shortDate(v.day,true)}: ${v.store.name}\n${v.lines.map(l=>`• ${l.item.qty} × ${selectedProduct(l).title}: ${E.money(l.cost)} (${priceKind(l.offer)}, ${E.packLabel(l.offer.pack)}${packChange(l)?'; '+packChange(l):''})`).join('\n')}${(v.unpriced||[]).map(u=>`\n• ${u.item.qty} × ${(u.item.requestedProduct||u.item.product).title}: ${u.assignmentKind==='assortment'?'im Sortiment erfasst':u.assignmentKind==='explicit-target'?'dein Zielmarkt':'hier mitkaufen'}, ${estimateText(u.item)}, Verfügbarkeit nicht bestätigt`).join('')}`).join('\n\n')}${pending.length?'\n\nNoch keinem Laden zugeordnet:\n'+pending.map(u=>`• ${u.item.qty} × ${(u.item.requestedProduct||u.item.product).title}: ${u.reason}; ${estimateText(u.item)}`).join('\n'):''}${priceGuide?.summarize(p.unknown,E.berlinToday()).count?'\n\nGeschätzte '+(priceGuide.summarize(p.unknown,E.berlinToday()).remaining?'Teilsumme':'Budgetsumme')+': ca. '+E.money(p.total+priceGuide.summarize(p.unknown,E.berlinToday()).total)+' (belegte Preise plus Richtwerte, ohne Pfand).':''}\n\nBelegte Zwischensumme nur aus erfassten Preisen, ohne Fahrtkosten. ${p.complete?'':'Offene Preise fehlen in der Summe. '}Bestand vor Ort nicht bestätigt.`;
   }
   function downloadJson(name,data){const json=JSON.stringify(data,null,2);if(/SparnahAndroid\//.test(navigator.userAgent||'')){window.prompt('sparnah-save:'+name,json);return;}const url=URL.createObjectURL(new Blob([json],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);}
   function backup(){downloadJson('sparnah-sicherung-'+E.berlinToday()+'.json',{schemaVersion:1,exportedAt:new Date().toISOString(),state:state()});toast('Sicherung erstellt – ohne privaten Verbindungscode.');}
@@ -598,7 +649,7 @@
         ops.push({type:'offer.add',offer:{...o,verification:'household'}});
       }
       openDialog('Sicherung zur Liste hinzufügen?',`<p>${ops.filter(o=>o.type==='item.add').length} Produkte und ${b.state.offers.length} eigene Angebote werden ergänzt. Bereits vorhandene Produktmengen werden addiert. Andere Einträge bleiben erhalten.</p><div class="dialog-actions"><button class="primary" id="confirm-import">Jetzt ergänzen</button><button class="secondary" data-action="close-dialog">Abbrechen</button></div>`);
-      $('confirm-import').onclick=()=>{for(const op of ops)perform(op,false);closeDialog();render();toast('Sicherung ergänzt.');};
+      $('confirm-import').onclick=()=>{performMany(ops,false);closeDialog();render();toast('Sicherung ergänzt.');};
     }catch(e){toast(e.message);}
     $('backup-file').value='';
   }
@@ -616,8 +667,8 @@
       else if(action==='start-shopping')startShopping(b.dataset.store,b.dataset.day);
       else if(action==='finish-shopping'){
         const session=shoppingSession(),purchased=session?shoppingEntries(session).filter(entry=>entry.checked):[];
-        for(const itemId of new Set(purchased.map(entry=>entry.itemId)))apply(model.base,{type:'item.remove',itemId});
-        delete model.shoppingSession;persist();reindex();navigate('list');
+        const ops=[...new Set(purchased.map(entry=>entry.itemId))].map(itemId=>({type:'item.remove',itemId}));
+        delete model.shoppingSession;performMany(ops,false);navigate('list');
         toast(purchased.length?'Einkauf beendet. Gekaufte Produkte wurden aus deiner Liste entfernt. Offene bleiben erhalten.':'Rundgang beendet. Deine offenen Produkte bleiben auf der Liste.');
       }
       else if(action==='edit-market'){ui.layoutStore=b.dataset.store;ui.layoutReturn=ui.tab; navigate('market-layout');}
@@ -636,11 +687,11 @@
         const plan=E.optimize(candidates,offers(),C.stores,{...state().settings,weekStart:weekStart(),notBefore:E.berlinToday()});
         const covered=(plan.lines||[]).filter(Boolean).slice(0,3);
         if(!covered.length){toast('Für diese Auswahl fehlen passende Beispielpreise. Du kannst eigene Produkte aufschreiben.');return;}
-        for(const line of covered)perform({type:'item.add',itemId:line.item.product.id,product:line.item.product,qty:1},false);
+        performMany(covered.map(line=>({type:'item.add',itemId:line.item.product.id,product:line.item.product,qty:1})),false);
         render();toast(covered.length+' Beispielprodukte mit passenden, geprüften Preisen eingefügt.');
       }
       else if(action==='item-choice')perform({type:'item.choice',itemId:id,mode:b.dataset.mode});
-      else if(action==='all-cheapest'){for(const i of activeItems())perform({type:'item.choice',itemId:i.id,mode:'cheapest'},false);render();toast('Günstigste passende Auswahl für alle offenen Produkte aktiviert.');}
+      else if(action==='all-cheapest'){performMany(activeItems().map(i=>({type:'item.choice',itemId:i.id,mode:'cheapest'})));toast('Günstigste passende Auswahl für alle offenen Produkte aktiviert.');}
       else if(action==='quantity')perform({type:'item.delta',itemId:id,delta:Number(b.dataset.delta)});
       else if(action==='check'){const i=state().items.find(i=>i.id===id);if(i)perform({type:'item.check',itemId:id,checked:!i.checked});}
       else if(action==='remove-item'){perform({type:'item.remove',itemId:id});toast('Produkt entfernt.');}

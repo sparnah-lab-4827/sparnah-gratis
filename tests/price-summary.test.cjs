@@ -9,15 +9,17 @@ function openApp({referencePriceCents=null,originalPrice=399,today="2026-10-19",
  const data={catalog:{stores:[{id:'shop',name:'Example shop',retailerId:'rewe'},{id:'other',name:'Other shop',retailerId:'kaufland'}],products:[product,alternative,missing],offers:[...(originalPrice!==null?[price(product,originalPrice)]:[]),{...price(alternative,199),referencePriceCents}],observedAt:'2026-10-19'},assortment:{products:[],sources:{}},status:{stores:{}},leaflets:{leaflets:[]}};
  const model={base:{items:[product,missing].map(p=>({id:p.id,product:p,qty:1})),offers:[],settings:{maxStores:1,enabledStores:['shop'],knownStoreIds:['shop','other']}},photos:false};
  configureFixture(data,model);
- let shared='',planCalls=0,comparisonCalls=0,refreshData;
+ let shared='',planCalls=0,comparisonCalls=0,indexBuilds=0,storageWrites=0,refreshData;
  const storage=new Map([['sparnah-v1',savedModel||JSON.stringify(model)]]),elements=new Map(),handlers={};
  function el(id){if(!elements.has(id))elements.set(id,{id,innerHTML:'',textContent:'',classList:{add(){},remove(){},toggle(){}},addEventListener(){},setAttribute(){},removeAttribute(){},focus(){},showModal(){this.open=true;},close(){this.open=false;}});return elements.get(id);}
  const doc={getElementById:el,addEventListener:(name,fn)=>handlers[name]=fn,visibilityState:'visible'};
  const window={document:doc,addEventListener(){},setInterval(){},scrollTo(){},SparnahVault:{getData:()=>data,getStatus:()=>({}),subscribe(fn){refreshData=fn;}}};
  for(const [key,file] of Object.entries({SparnahShopping:'shopping',SparnahLogos:'logos',SparnahEstimates:'estimates',SparnahStores:'stores',SparnahEngine:'engine',SparnahSearch:'search',SparnahChoices:'choices',SparnahSelection:'selection',SparnahUpdates:'updates',SparnahLeaflets:'leaflets'}))window[key]=require('../site/'+file+'.js');
  window.SparnahEngine={...E,berlinToday:()=>today,optimize(...args){planCalls++;return E.optimize(...args);},compareStores(...args){comparisonCalls++;return E.compareStores(...args);}};
- vm.runInNewContext(fs.readFileSync(require.resolve('../site/app.js'),'utf8'),{window,document:doc,location:{protocol:'https:'},localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)},crypto:webcrypto,Intl,URL,console,setInterval(){},setTimeout(){},clearTimeout(){},navigator:{share:async data=>{shared=data.text;}}});
- return {comparisonCalls:()=>comparisonCalls,planCalls:()=>planCalls,advanceDay:()=>{today=E.addDays(today,1);},refresh:()=>refreshData(data),shared:()=>shared,html:()=>el('main').innerHTML,elementHtml:id=>el(id).innerHTML,confirmImport:()=>el('confirm-import').onclick(),storage,product,setValue:(id,value)=>el(id).value=value,submit:id=>handlers.submit({preventDefault(){},target:{id}}),input:target=>handlers.input({target}),change:target=>handlers.change({target:{classList:{contains:()=>false},...target}}),click:async(action,extra={})=>handlers.click({preventDefault(){},target:{closest:()=>({dataset:{action,...extra}})}})};
+ const searchApi=window.SparnahSearch;
+ window.SparnahSearch={...searchApi,build(...args){indexBuilds++;return searchApi.build(...args);}};
+ vm.runInNewContext(fs.readFileSync(require.resolve('../site/app.js'),'utf8'),{window,document:doc,location:{protocol:'https:'},localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>{storageWrites++;storage.set(k,v);}},crypto:webcrypto,Intl,URL,console,setInterval(){},setTimeout(){},clearTimeout(){},navigator:{share:async data=>{shared=data.text;}}});
+ return {indexBuilds:()=>indexBuilds,storageWrites:()=>storageWrites,comparisonCalls:()=>comparisonCalls,planCalls:()=>planCalls,advanceDay:()=>{today=E.addDays(today,1);},refresh:()=>refreshData(data),shared:()=>shared,html:()=>el('main').innerHTML,elementHtml:id=>el(id).innerHTML,confirmImport:()=>el('confirm-import').onclick(),storage,product,setValue:(id,value)=>el(id).value=value,submit:id=>handlers.submit({preventDefault(){},target:{id}}),input:target=>handlers.input({target}),change:target=>handlers.change({target:{classList:{contains:()=>false},...target}}),click:async(action,extra={})=>handlers.click({preventDefault(){},target:{closest:()=>({dataset:{action,...extra}})}})};
 }
 test('normal-price partial plan explains missing prices without the misleading discount failure',async()=>{
  const app=openApp();await app.click('tab',{tab:'plan'});
@@ -209,6 +211,94 @@ test('cached plan is reused across views and invalidated by quantity, selection,
  assert.equal(app.planCalls(),initial+3);
  app.advanceDay();await app.click('tab',{tab:'plan'});assert.equal(app.planCalls(),initial+4);
  app.refresh();assert.equal(app.planCalls(),initial+5);
+});
+
+test('list edits reuse the catalog and unaffected comparisons while bulk choice is saved once',async()=>{
+ const app=openApp(),builds=app.indexBuilds(),compares=app.comparisonCalls();
+ await app.click('quantity',{id:'original',delta:'1'});
+ assert.equal(app.indexBuilds(),builds);assert.equal(app.comparisonCalls(),compares+1);
+ await app.click('check',{id:'original'});await app.click('check',{id:'original'});
+ assert.equal(app.comparisonCalls(),compares+1,'checking does not change prices');
+ await app.click('add-product',{id:'original'});
+ assert.equal(app.indexBuilds(),builds);
+ assert.equal(JSON.parse(app.storage.get('sparnah-v1')).base.items[0].qty,3);
+ const writes=app.storageWrites();await app.click('all-cheapest');
+ assert.equal(app.storageWrites(),writes+1);
+ assert.ok(JSON.parse(app.storage.get('sparnah-v1')).base.items.every(i=>i.choiceMode==='cheapest'));
+ app.input({id:'search',value:'Mein neues Produkt'});
+ await app.click('custom-product');assert.equal(app.indexBuilds(),builds+1);
+ const added=JSON.parse(app.storage.get('sparnah-v1')).base.items.find(i=>i.product.title==='Mein neues Produkt');
+ assert.ok(added);
+ await app.click('remove-item',{id:added.id});assert.equal(app.indexBuilds(),builds+2);
+ app.refresh();assert.equal(app.indexBuilds(),builds+3);
+});
+
+function assortmentPlanFixture(data,model){
+ const extra={id:'milk-fixture',title:'Milch',groupId:'milk-fixture',variantId:'milk-fixture',pack:{min:1000,max:1000,unit:'ml'}};
+ data.catalog.products.push(extra);model.base.items.push({id:extra.id,product:extra,qty:1});
+ data.catalog.offers.push({...data.catalog.offers[0],id:'milk-price',productId:extra.id,title:extra.title,
+  groupIds:[extra.groupId],variantIds:[extra.variantId],pack:extra.pack,storeId:'other',priceCents:100});
+ model.base.settings.enabledStores=['shop','other'];model.base.settings.maxStores=2;
+ data.assortment.products.push({...data.catalog.products[2],assortmentStoreId:'other',
+  assortmentSourceUrl:'https://example.com/catalog/butter',assortmentCheckedAt:'2026-10-20'});
+}
+const butterWish={id:'missing',title:'Butter',groupId:'butter',pack:{min:250,max:250,unit:'g'}};
+test('estimated items follow a matching assortment into an already planned store and its shopping list',async()=>{
+ const app=openApp({today:'2026-10-20',missingProduct:butterWish,configureFixture:assortmentPlanFixture});
+ await app.click('tab',{tab:'plan'});
+ const visits=app.html().match(/<article class="plan-visit">[\s\S]*?<\/article>/g);
+ const other=visits.find(v=>v.includes('data-store="other"')),shop=visits.find(v=>v.includes('data-store="shop"'));
+ assert.match(other,/1 × Butter/);assert.doesNotMatch(shop,/1 × Butter/);
+ assert.match(other,/Im Sortiment erfasst · Händlerpreis offen/);assert.match(other,/Geschätzt ca. 1,20/);
+ assert.match(app.html(),/4,99.*belegte Preise/);assert.match(app.html(),/ca. 6,19/);
+ assert.doesNotMatch(app.html(),/<section class="unknown-card"/);
+ await app.click('share-plan');assert.match(app.shared(),/Butter/);
+ const day=other.match(/data-day="([^"]+)"/)[1];
+ await app.click('start-shopping',{store:'other',day});
+ assert.match(app.html(),/data-shopping-item="missing"/);
+ assert.match(app.html(),/Geschätzt ca. 1,20/);
+ assert.doesNotMatch(app.html(),/data-shopping-item="original"/);
+});
+test('evidence only for a different selected store keeps the unpriced item out of an unrelated itinerary',async()=>{
+ const app=openApp({today:'2026-10-20',missingProduct:butterWish,configureFixture(data,model){
+  assortmentPlanFixture(data,model);model.base.settings.maxStores=1;
+ }});
+ await app.click('tab',{tab:'plan'});
+ const visit=app.html().match(/<article class="plan-visit">[\s\S]*?<\/article>/)[0];
+ assert.match(visit,/data-store="shop"/);assert.doesNotMatch(visit,/1 × Butter/);
+ assert.match(app.html(),/Passender Sortimentshinweis für einen ausgewählten, aber nicht eingeplanten Laden/);
+ await app.click('pick-store',{control:'plan-destination',value:'other'});
+ assert.match(app.html(),/Dein Zielmarkt · Sortiment unbestätigt/);
+ assert.match(app.html(),/1 × Butter/);
+});
+test('retailer-wide ALDI catalogue hints survive the displayed-market projection in the real app',async()=>{
+ const app=openApp({today:'2026-10-20',missingProduct:butterWish,configureFixture(data,model){
+  assortmentPlanFixture(data,model);
+  Object.assign(data.catalog.stores[0],{retailerId:'aldi',url:'https://www.aldi-sued.de/',preferredDisplay:true});
+  data.catalog.stores.push({id:'aldi',name:'ALDI catalogue',retailerId:'aldi',url:'https://www.aldi-sued.de/'});
+  data.assortment.sources.aldi={sourceUrl:'https://www.aldi-sued.de/produkte'};
+  data.assortment.products=[{...butterWish,id:'assortment:aldi:123:butter',retailerProductId:'123',
+   assortmentStoreId:'aldi',assortmentSourceUrl:'https://www.aldi-sued.de/produkt/butter-123',
+   sourcePage:'https://www.aldi-sued.de/produkte/kuehlung/k/123?page=2',
+   assortmentCheckedAt:'2026-10-20',availabilityConfirmed:false}];
+ }});
+ await app.click('tab',{tab:'plan'});
+ const visits=app.html().match(/<article class="plan-visit">[\s\S]*?<\/article>/g);
+ assert.match(visits.find(v=>v.includes('data-store="shop"')),/1 × Butter[\s\S]*?Im Sortiment erfasst/);
+ assert.doesNotMatch(visits.find(v=>v.includes('data-store="other"')),/1 × Butter/);
+ assert.match(app.html(),/Preis, Wochenangebot und Filialbestand offen/);
+});
+test('changing an already checked quantity requires checking it again before shopping completion',async()=>{
+ const app=openApp({today:'2026-10-20'});
+ await app.click('quantity',{id:'original',delta:'1'});await app.click('tab',{tab:'plan'});
+ const day=app.html().match(/data-action="start-shopping" data-store="shop" data-day="([^"]+)"/)[1];
+ await app.click('start-shopping',{store:'shop',day});await app.click('check',{id:'original'});
+ await app.click('tab',{tab:'list'});await app.click('quantity',{id:'original',delta:'1'});
+ let saved=JSON.parse(app.storage.get('sparnah-v1'));
+ assert.equal(saved.base.items[0].qty,3);assert.equal(saved.base.items[0].checked,false);
+ await app.click('tab',{tab:'shopping'});assert.match(app.html(),/3 × Nutella/);
+ await app.click('finish-shopping');saved=JSON.parse(app.storage.get('sparnah-v1'));
+ assert.ok(!saved.base.items[0].deleted);assert.equal(saved.base.items[0].qty,3);
 });
 
 test('mobile navigation keeps the plan directly accessible and moves setup behind the gear',async()=>{

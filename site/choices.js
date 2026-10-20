@@ -7,7 +7,8 @@
   'use strict';
   const normalize = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/ß/g, 'ss').replace(/[–—]/g, '-').replace(/\s+/g, ' ').trim();
   const packKey = pack => pack && Number.isFinite(pack.min) && pack.min > 0 && pack.min === pack.max && ['g', 'ml', 'St', 'St.', 'Blatt'].includes(pack.unit) ? `${pack.min}${pack.unit}` : null;
-  const packLabel = pack => `${new Intl.NumberFormat('de-DE').format(pack.min)} ${pack.unit}`;
+  const packNumberFormatter = new Intl.NumberFormat('de-DE');
+  const packLabel = pack => `${packNumberFormatter.format(pack.min)} ${pack.unit}`;
   const key = value => encodeURIComponent(value);
   const productText = product => normalize([product.title, product.line, ...(Array.isArray(product.dietaryLabels) ? product.dietaryLabels : [])].filter(Boolean).join(' '));
   function dietaryKey(product) {
@@ -390,7 +391,7 @@
       return !profile||existing.has(`${profile.group}|${packKey(p.pack)}`)?[]:[{...p,groupId:profile.group}];
     });
   }
-  function basicGroups(product, products, brands) {
+  function basicGroups(product, products, brands, candidates, basicProfiles) {
     // Broad list wishes name a food, not a particular brand or cultivar.
     // Keep those wishes separate from exact catalogue products and all opt-in substitutions.
     if (!packKey(product.pack)) return [];
@@ -402,13 +403,12 @@
     const plainRice = product.pack.unit === 'g' && /^(?:(?:bio|parboiled|basmati|jasmin|langkorn|rundkorn|vollkorn)\s+)*(?:reis|basmatireis|jasminreis|langkornreis|rundkornreis)$/.test(title);
     const yogurtWords=withoutBrand(product,brands).replace(/\b\d+(?:[.,]\d+)?\s*%/g,'').replace(/[.,-]+/g,' ').split(/\s+/).filter(Boolean);
     const naturalYogurt=product.pack.unit==='g' && yogurtWords.includes('naturjoghurt') && yogurtWords.every(w=>/^(?:bio|joghurt|naturjoghurt|mild|milde|milder|fett|natur)$/.test(w));
-    const candidates=profileGroups(product,brands);
     return products.filter(wish => !wish.variantId && !wish.brand && packKey(wish.pack) === packKey(product.pack) &&
       (freshApples && wish.groupId === 'aepfel' && normalize(wish.title) === 'apfel' ||
        plainPasta && wish.groupId === 'nudeln' && normalize(wish.title) === 'nudeln' ||
        plainRice && wish.groupId === 'reis' && normalize(wish.title) === 'reis' ||
        naturalYogurt && wish.groupId === 'joghurt' && normalize(wish.title) === 'naturjoghurt' ||
-       ['butter','milch-35'].includes(wish.groupId) && profiles(wish,brands).some(p=>candidates.includes(p.group)))).map(wish => wish.groupId);
+       ['butter','milch-35'].includes(wish.groupId) && basicProfiles.get(wish).some(group=>candidates.includes(group)))).map(wish => wish.groupId);
   }
   function getChoice(product, products = []) {
     return choiceWithBrands(product, knownBrands(products));
@@ -445,6 +445,7 @@
     }
     const basics = products.filter(p => !p.variantId && !p.brand &&
       ['aepfel','nudeln','reis','joghurt','butter','milch-35'].includes(p.groupId));
+    const basicProfiles = new Map(basics.map(p=>[p,profiles(p,brands).map(profile=>profile.group)]));
     return (offers || []).map(offer => {
       if (!offer || offer.packUnconfirmed || !['source', 'household'].includes(offer.verification) || !packKey(offer.pack)) return offer;
       const linked = byId.get(offer.productId);
@@ -455,7 +456,8 @@
       for (const field of ['paperLayers','paperTotalSheets','subtitle']) if (!Object.hasOwn(offer,field)) delete candidate[field];
       const frostaIdentity=frostaMealIdentity(candidate,brands);
       const linkedFrosta=frostaIdentity?frostaAliases.get(frostaIdentity)||[]:[];
-      const additions = basicGroups(candidate, basics, brands).concat(profileGroups(candidate, brands),
+      const candidateGroups=profileGroups(candidate, brands);
+      const additions = basicGroups(candidate, basics, brands,candidateGroups,basicProfiles).concat(candidateGroups,
         frostaIdentity?['frosta-meals','frosta-ready-meals',...linkedFrosta.map(p=>p.groupId).filter(Boolean)]:[]);
       if (!additions.length) return offer;
       const manufacturer = manufacturerDefinition(candidate, brands);
