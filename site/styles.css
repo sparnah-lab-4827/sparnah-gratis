@@ -52,3 +52,13 @@
 .destination-picker{display:grid;gap:10px;margin:0 0 24px;max-width:680px}.destination-picker select{width:100%;min-height:48px}
 
 .pack-change{font-size:12px;line-height:1.5;color:var(--green);margin:6px 0}
+/* Estimates use text labels as well as colour; real price totals remain separate. */
+.estimated-price,.estimated-budget{background:#fff4d6;color:#684800;border:1px dashed #a77a20;border-radius:12px;padding:12px;margin:10px 0}
+.estimated-price p,.estimated-budget p{margin-top:6px}
+.estimated-price a,.estimated-price summary{color:#684800}
+.estimated-budget{padding:20px;margin:20px 0}
+.estimated-budget h2{font-size:18px}
+.budget-value{display:block;font-size:30px;margin-top:8px}
+.guide-table{overflow-x:auto;margin-top:12px}
+.guide-table table{border-collapse:collapse;width:100%;text-align:left;font-size:13px}
+.guide-table td,.guide-table th{padding:9px;border-bottom:1px solid #ddd}

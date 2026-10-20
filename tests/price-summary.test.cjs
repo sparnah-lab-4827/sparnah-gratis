@@ -1,21 +1,22 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),{webcrypto}=require('node:crypto');
 const E=require('../site/engine.js');
-function openApp({referencePriceCents=null,originalPrice=399}={}){
+function openApp({referencePriceCents=null,originalPrice=399,today="2026-10-19",missingProduct=null}={}){
  const product={id:'original',groupId:'original',variantId:'original450',title:'Nutella',brand:'Ferrero',pack:{min:450,max:450,unit:'g'}};
  const alternative={id:'own',groupId:'own',variantId:'own400',title:'House Nuss-Nougat-Creme',brand:'House',pack:{min:400,max:400,unit:'g'}};
- const missing={id:'missing',title:'Unpriced food',groupId:'missing'};
- const price=(p,cents)=>({id:p.id,productId:p.id,title:p.title,brand:p.brand,groupIds:[p.groupId],variantIds:[p.variantId],pack:p.pack,priceCents:cents,priceKind:'regular',storeId:'shop',start:'2026-10-19',end:'2026-10-19',verification:'source',sourceUrl:'https://example.com/price/'+p.id});
+ const missing=missingProduct||{id:'missing',title:'Unpriced food',groupId:'missing'};
+ const price=(p,cents)=>({id:p.id,productId:p.id,title:p.title,brand:p.brand,groupIds:[p.groupId],variantIds:[p.variantId],pack:p.pack,priceCents:cents,priceKind:'regular',storeId:'shop',start:today,end:today,verification:'source',sourceUrl:'https://example.com/price/'+p.id});
  const data={catalog:{stores:[{id:'shop',name:'Example shop'},{id:'other',name:'Other shop'}],products:[product,alternative,missing],offers:[...(originalPrice!==null?[price(product,originalPrice)]:[]),{...price(alternative,199),referencePriceCents}],observedAt:'2026-10-19'},assortment:{products:[],sources:{}},status:{stores:{}},leaflets:{leaflets:[]}};
  const model={base:{items:[product,missing].map(p=>({id:p.id,product:p,qty:1})),offers:[],settings:{maxStores:1,enabledStores:['shop'],knownStoreIds:['shop','other']}},photos:false};
+ let shared='',planCalls=0,refreshData;
  const storage=new Map([['sparnah-v1',JSON.stringify(model)]]),elements=new Map(),handlers={};
  function el(id){if(!elements.has(id))elements.set(id,{id,innerHTML:'',textContent:'',classList:{add(){},remove(){},toggle(){}},addEventListener(){},setAttribute(){},removeAttribute(){},focus(){}});return elements.get(id);}
  const doc={getElementById:el,addEventListener:(name,fn)=>handlers[name]=fn,visibilityState:'visible'};
- const window={document:doc,addEventListener(){},setInterval(){},scrollTo(){},SparnahVault:{getData:()=>data,getStatus:()=>({}),subscribe(){}}};
- for(const [key,file] of Object.entries({SparnahStores:'stores',SparnahEngine:'engine',SparnahSearch:'search',SparnahChoices:'choices',SparnahSelection:'selection',SparnahUpdates:'updates',SparnahLeaflets:'leaflets'}))window[key]=require('../site/'+file+'.js');
- window.SparnahEngine={...E,berlinToday:()=> '2026-10-19'};
- vm.runInNewContext(fs.readFileSync(require.resolve('../site/app.js'),'utf8'),{window,document:doc,location:{protocol:'https:'},localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)},crypto:webcrypto,Intl,URL,console,setInterval(){},setTimeout(){},clearTimeout(){},navigator:{}});
- return {html:()=>el('main').innerHTML,storage,product,change:target=>handlers.change({target:{classList:{contains:()=>false},...target}}),click:async(action,extra={})=>handlers.click({preventDefault(){},target:{closest:()=>({dataset:{action,...extra}})}})};
+ const window={document:doc,addEventListener(){},setInterval(){},scrollTo(){},SparnahVault:{getData:()=>data,getStatus:()=>({}),subscribe(fn){refreshData=fn;}}};
+ for(const [key,file] of Object.entries({SparnahEstimates:'estimates',SparnahStores:'stores',SparnahEngine:'engine',SparnahSearch:'search',SparnahChoices:'choices',SparnahSelection:'selection',SparnahUpdates:'updates',SparnahLeaflets:'leaflets'}))window[key]=require('../site/'+file+'.js');
+ window.SparnahEngine={...E,berlinToday:()=>today,optimize(...args){planCalls++;return E.optimize(...args);}};
+ vm.runInNewContext(fs.readFileSync(require.resolve('../site/app.js'),'utf8'),{window,document:doc,location:{protocol:'https:'},localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)},crypto:webcrypto,Intl,URL,console,setInterval(){},setTimeout(){},clearTimeout(){},navigator:{share:async data=>{shared=data.text;}}});
+ return {planCalls:()=>planCalls,advanceDay:()=>{today=E.addDays(today,1);},refresh:()=>refreshData(data),shared:()=>shared,html:()=>el('main').innerHTML,storage,product,change:target=>handlers.change({target:{classList:{contains:()=>false},...target}}),click:async(action,extra={})=>handlers.click({preventDefault(){},target:{closest:()=>({dataset:{action,...extra}})}})};
 }
 test('normal-price partial plan explains missing prices without the misleading discount failure',async()=>{
  const app=openApp();await app.click('tab',{tab:'plan'});
@@ -62,4 +63,29 @@ test('offers shop selector follows subscriptions and clears a removed shop filte
  await app.click('clear-stores');
  assert.equal((options().match(/<option/g)||[]).length,1);
  assert.match(app.html(),/Noch keine Märkte gewählt/);
+});
+
+test('missing prices show distinct estimates without changing confirmed totals, savings or offer results',async()=>{
+ const app=openApp({today:'2026-10-20',missingProduct:{id:'missing',title:'Butter'}});
+ assert.match(app.html(),/Geschätzt: ca. 1,20/);
+ await app.click('tab',{tab:'plan'});
+ assert.match(app.html(),/Geschätztes Einkaufsbudget/);assert.match(app.html(),/ca. 5,19/);
+ assert.match(app.html(),/3,99.*belegte Preise/);assert.match(app.html(),/1 Preis noch offen/);
+ assert.doesNotMatch(app.html(),/1 günstigere Alternative/);
+ await app.click('share-plan');assert.match(app.shared(),/Geschätzt ca. 1,20/);assert.match(app.shared(),/ca. 5,19/);
+ await app.click('tab',{tab:'offers'});assert.doesNotMatch(app.html(),/Geschätzt|Richtwert/);
+ await app.click('tab',{tab:'settings'});assert.match(app.html(),/Richtpreisliste/);assert.match(app.html(),/20.04./);
+ await app.click('clear-stores');await app.click('tab',{tab:'list'});assert.doesNotMatch(app.html(),/Geschätzt: ca./);
+});
+
+test('cached plan is reused across views and invalidated by quantity, selection, day and catalog updates',async()=>{
+ const app=openApp();const initial=app.planCalls();
+ await app.click('tab',{tab:'plan'});await app.click('tab',{tab:'list'});
+ assert.equal(app.planCalls(),initial);
+ await app.click('quantity',{id:'original',delta:'1'});assert.equal(app.planCalls(),initial+1);
+ await app.click('all-cheapest');assert.equal(app.planCalls(),initial+2);
+ app.change({id:'',classList:{contains:()=>true},checked:true,dataset:{store:'other'}});
+ assert.equal(app.planCalls(),initial+3);
+ app.advanceDay();await app.click('tab',{tab:'plan'});assert.equal(app.planCalls(),initial+4);
+ app.refresh();assert.equal(app.planCalls(),initial+5);
 });

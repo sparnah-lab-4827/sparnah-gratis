@@ -94,16 +94,23 @@
     const active = items.filter(x => !x.deleted && !x.checked && x.qty > 0);
     const days = daysOfWeek(weekStart).filter(day => day >= notBefore);
     const eligible = offers.filter(o => enabled.has(o.storeId) && days.some(day => validOn(o, day)));
+    const offersByStore=new Map();
+    for(const offer of eligible){
+      if(!offersByStore.has(offer.storeId))offersByStore.set(offer.storeId,[]);
+      offersByStore.get(offer.storeId).push(offer);
+    }
     if (!active.length) return { empty: true, weekStart, count: 0, coverage: 0, visits: [], unknown: [], complete: false };
     // Precompute one best, confirmed line for each item/store/day.
     const matrix = stores.filter(s => enabled.has(s.id)).map(store => ({
       store,
-      days: days.filter(day => storeOpenOn(store,day)).map(day => ({
+      days: days.filter(day => storeOpenOn(store,day)).map(day => {
+        const dailyOffers=(offersByStore.get(store.id)||[]).filter(offer=>validOn(offer,day));
+        return {
         storeId: store.id, day,
         lines: active.map(item => {
           let best = null;
-          for (const offer of eligible) {
-            if (offer.storeId !== store.id || !validOn(offer, day) || !offerUsable(offer, item.qty)) continue;
+          for (const offer of dailyOffers) {
+            if (!offerUsable(offer, item.qty)) continue;
             const m = match(item.product, offer);
             if (!['exact', 'group'].includes(m.status)) continue;
             const cost = offer.priceCents * item.qty, deposit = (offer.depositCents || 0) * item.qty,compareCost=comparisonCost(item.product,offer,item.qty);
@@ -111,7 +118,7 @@
           }
           return best;
         })
-      }))
+      };})
     })).filter(s => s.days.some(d => d.lines.some(Boolean)));
     let evaluated = 0;
     function score(visits) {

@@ -17,7 +17,7 @@ import org.json.JSONObject;
 public final class MainActivity extends Activity {
     private static final String HOME = "https://sparnah-lab-4827.github.io/sparnah-gratis/";
     private static final int OPEN_FILE = 10, SAVE_FILE = 11;
-    private final Set<String> shell = new HashSet<>(Arrays.asList("index.html","styles.css","engine.js","search.js","leaflets.js","stores.js","choices.js","selection.js","updates.js","vault.js","install.js","app.js","sw.js","manifest.webmanifest","icon.svg","icon-192.png","icon-512.png"));
+    private final Set<String> shell = new HashSet<>(Arrays.asList("index.html","styles.css","engine.js","estimates.js","search.js","leaflets.js","stores.js","choices.js","selection.js","updates.js","vault.js","install.js","app.js","sw.js","manifest.webmanifest","icon.svg","icon-192.png","icon-512.png"));
     private WebView web;
     private ValueCallback<Uri[]> fileCallback;
     private String pendingJson;

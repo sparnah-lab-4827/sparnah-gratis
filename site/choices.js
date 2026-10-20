@@ -185,7 +185,10 @@
        ['butter','milch-35'].includes(wish.groupId) && profiles(wish,brands).some(p=>candidates.includes(p.group)))).map(wish => wish.groupId);
   }
   function getChoice(product, products = []) {
-    const candidates = profiles(product, knownBrands(products));
+    return choiceWithBrands(product, knownBrands(products));
+  }
+  function choiceWithBrands(product, brands) {
+    const candidates = profiles(product, brands);
     // A product with several fat levels is an existing assortment choice, not one new fat-level promise.
     const profile = candidates.length === 1 ? candidates[0] : null;
     const choicePack=profile?.kind==='alternative'?{min:Math.ceil(product.pack.min*0.8),max:Math.floor(product.pack.max*1.2),unit:product.pack.unit}:product.pack;
@@ -193,6 +196,17 @@
       label: 'Günstigstes passendes Produkt', kind: profile ? profile.kind : 'exact', available: !!product,
       broader: !!profile && profile.kind !== 'same-product',
       description: profile ? profile.description : 'Günstigster erfasster Preis deiner bisherigen Produktauswahl. Für weitere Alternativen fehlen eindeutige Vergleichsangaben.'};
+  }
+  function createResolver(products = []) {
+    const brands=knownBrands(products),cache=new Map();
+    return product=>{
+      const key=JSON.stringify(product);
+      if(!cache.has(key)){
+        if(cache.size>=512)cache.clear();
+        cache.set(key,choiceWithBrands(product,brands));
+      }
+      return cache.get(key);
+    };
   }
   function annotateOffers(offers, products = []) {
     const byId = new Map(products.map(p => [p.id, p])), brands = knownBrands(products);
@@ -208,5 +222,5 @@
       return {...offer, groupIds: [...new Set([...(offer.groupIds || []), ...additions])]};
     });
   }
-  return { getChoice, annotateOffers };
+  return { getChoice, createResolver, annotateOffers };
 });
