@@ -1,7 +1,7 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),{webcrypto}=require('node:crypto');
 const E=require('../site/engine.js');
-function openApp({referencePriceCents=null,originalPrice=399,today="2026-10-19",missingProduct=null}={}){
+function openApp({referencePriceCents=null,originalPrice=399,today="2026-10-19",missingProduct=null,savedModel=null}={}){
  const product={id:'original',groupId:'original',variantId:'original450',title:'Nutella',brand:'Ferrero',pack:{min:450,max:450,unit:'g'}};
  const alternative={id:'own',groupId:'own',variantId:'own400',title:'House Nuss-Nougat-Creme',brand:'House',pack:{min:400,max:400,unit:'g'}};
  const missing=missingProduct||{id:'missing',title:'Unpriced food',groupId:'missing'};
@@ -9,14 +9,14 @@ function openApp({referencePriceCents=null,originalPrice=399,today="2026-10-19",
  const data={catalog:{stores:[{id:'shop',name:'Example shop',retailerId:'rewe'},{id:'other',name:'Other shop',retailerId:'kaufland'}],products:[product,alternative,missing],offers:[...(originalPrice!==null?[price(product,originalPrice)]:[]),{...price(alternative,199),referencePriceCents}],observedAt:'2026-10-19'},assortment:{products:[],sources:{}},status:{stores:{}},leaflets:{leaflets:[]}};
  const model={base:{items:[product,missing].map(p=>({id:p.id,product:p,qty:1})),offers:[],settings:{maxStores:1,enabledStores:['shop'],knownStoreIds:['shop','other']}},photos:false};
  let shared='',planCalls=0,refreshData;
- const storage=new Map([['sparnah-v1',JSON.stringify(model)]]),elements=new Map(),handlers={};
+ const storage=new Map([['sparnah-v1',savedModel||JSON.stringify(model)]]),elements=new Map(),handlers={};
  function el(id){if(!elements.has(id))elements.set(id,{id,innerHTML:'',textContent:'',classList:{add(){},remove(){},toggle(){}},addEventListener(){},setAttribute(){},removeAttribute(){},focus(){}});return elements.get(id);}
  const doc={getElementById:el,addEventListener:(name,fn)=>handlers[name]=fn,visibilityState:'visible'};
  const window={document:doc,addEventListener(){},setInterval(){},scrollTo(){},SparnahVault:{getData:()=>data,getStatus:()=>({}),subscribe(fn){refreshData=fn;}}};
- for(const [key,file] of Object.entries({SparnahLogos:'logos',SparnahEstimates:'estimates',SparnahStores:'stores',SparnahEngine:'engine',SparnahSearch:'search',SparnahChoices:'choices',SparnahSelection:'selection',SparnahUpdates:'updates',SparnahLeaflets:'leaflets'}))window[key]=require('../site/'+file+'.js');
+ for(const [key,file] of Object.entries({SparnahShopping:'shopping',SparnahLogos:'logos',SparnahEstimates:'estimates',SparnahStores:'stores',SparnahEngine:'engine',SparnahSearch:'search',SparnahChoices:'choices',SparnahSelection:'selection',SparnahUpdates:'updates',SparnahLeaflets:'leaflets'}))window[key]=require('../site/'+file+'.js');
  window.SparnahEngine={...E,berlinToday:()=>today,optimize(...args){planCalls++;return E.optimize(...args);}};
  vm.runInNewContext(fs.readFileSync(require.resolve('../site/app.js'),'utf8'),{window,document:doc,location:{protocol:'https:'},localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)},crypto:webcrypto,Intl,URL,console,setInterval(){},setTimeout(){},clearTimeout(){},navigator:{share:async data=>{shared=data.text;}}});
- return {planCalls:()=>planCalls,advanceDay:()=>{today=E.addDays(today,1);},refresh:()=>refreshData(data),shared:()=>shared,html:()=>el('main').innerHTML,elementHtml:id=>el(id).innerHTML,storage,product,change:target=>handlers.change({target:{classList:{contains:()=>false},...target}}),click:async(action,extra={})=>handlers.click({preventDefault(){},target:{closest:()=>({dataset:{action,...extra}})}})};
+ return {planCalls:()=>planCalls,advanceDay:()=>{today=E.addDays(today,1);},refresh:()=>refreshData(data),shared:()=>shared,html:()=>el('main').innerHTML,elementHtml:id=>el(id).innerHTML,storage,product,setValue:(id,value)=>el(id).value=value,submit:id=>handlers.submit({preventDefault(){},target:{id}}),input:target=>handlers.input({target}),change:target=>handlers.change({target:{classList:{contains:()=>false},...target}}),click:async(action,extra={})=>handlers.click({preventDefault(){},target:{closest:()=>({dataset:{action,...extra}})}})};
 }
 test('normal-price partial plan explains missing prices without the misleading discount failure',async()=>{
  const app=openApp();await app.click('tab',{tab:'plan'});
@@ -78,6 +78,22 @@ test('missing prices show distinct estimates without changing confirmed totals, 
  await app.click('clear-stores');await app.click('tab',{tab:'list'});assert.doesNotMatch(app.html(),/Geschätzt: ca./);
 });
 
+test('Soba without a merchant price gets a labelled pack estimate in list, plan and export',async()=>{
+ const app=openApp({today:'2026-10-20',missingProduct:{id:'soba-group-bag',title:'Nissin Soba Bag / Beutel',brand:'Nissin',category:'Fertiggerichte',isGroupChoice:true,pack:null}});
+ assert.match(app.html(),/Geschätzt: ca. 1,10/);
+ assert.match(app.html(),/Angenommene Packung:/);
+ assert.match(app.html(),/ähnlichen Produkt geschätzt/);
+ await app.click('quantity',{id:'soba-group-bag',delta:'1'});
+ assert.match(app.html(),/Geschätzt: ca. 2,20/);
+ await app.click('tab',{tab:'plan'});
+ assert.match(app.html(),/ca. 6,19/);assert.match(app.html(),/3,99.*belegte Preise/);
+ await app.click('share-plan');
+ assert.match(app.shared(),/Geschätzt ca. 2,20/);assert.match(app.shared(),/angenommene Packung/);
+ assert.match(app.shared(),/ähnliches Produkt/);
+ await app.click('tab',{tab:'offers'});assert.doesNotMatch(app.html(),/Geschätzt/);
+ assert.deepEqual(JSON.parse(app.storage.get('sparnah-v1')).base.settings.enabledStores,['shop']);
+});
+
 test('cached plan is reused across views and invalidated by quantity, selection, day and catalog updates',async()=>{
  const app=openApp();const initial=app.planCalls();
  await app.click('tab',{tab:'plan'});await app.click('tab',{tab:'list'});
@@ -121,4 +137,69 @@ test('logo pickers in offers and brands follow selected stores and apply the cho
  for(const tab of ['stores','settings','plan','list']){
   await app.click('tab',{tab});assert.match(app.html(),/src="logos\/rewe.svg"/);
  }
+});
+
+test('shopping visit includes unpriced items and selected alternatives, and checking keeps its route stable',async()=>{
+ const opts={today:'2026-10-20',missingProduct:{id:'missing',title:'Butter',category:'Milchprodukte'}};
+ const app=openApp(opts);await app.click('all-cheapest');await app.click('tab',{tab:'plan'});
+ const day=app.html().match(/data-action="start-shopping" data-store="shop" data-day="([^"]+)"/)[1];
+ await app.click('start-shopping',{store:'shop',day});
+ assert.match(app.html(),/Einkaufen bei REWE/);assert.match(app.html(),/House Nuss-Nougat-Creme/);
+ assert.match(app.html(),/Geschätzt: ca. 1,20/);assert.match(app.html(),/0 von 2 im Wagen/);
+ assert.match(app.html(),/Vollständige Einkaufsliste in Marktreihenfolge/);
+ assert.doesNotMatch(app.html(),/<select|<details|data-action="edit-market"|data-action="jump-area"/);
+ assert.equal((app.html().match(/data-shopping-item=/g)||[]).length,2);
+ assert.match(app.elementHtml('bottom-nav'),/class="nav-item active" data-action="tab" data-tab="plan"/);
+ const before=app.planCalls();await app.click('check',{id:'original'});
+ assert.match(app.html(),/1 von 2 im Wagen/);assert.match(app.html(),/data-shopping-item="original"/);
+ assert.match(app.html(),/Im Einkaufswagen/);assert.equal(app.planCalls(),before);
+ await app.click('check',{id:'missing'});assert.match(app.html(),/Alles im Wagen/);
+ const saved=app.storage.get('sparnah-v1'),reloaded=openApp({...opts,savedModel:saved});
+ assert.match(reloaded.html(),/Einkauf fortsetzen/);await reloaded.click('tab',{tab:'shopping'});
+ assert.match(reloaded.html(),/2 von 2 im Wagen/);assert.match(reloaded.html(),/House Nuss-Nougat-Creme/);
+ await reloaded.click('finish-shopping');
+ const final=JSON.parse(reloaded.storage.get('sparnah-v1'));
+ assert.equal(final.shoppingSession,undefined);assert.ok(final.base.items.every(i=>i.checked));
+ assert.deepEqual(final.base.items[0].product,app.product);assert.deepEqual(final.base.settings.enabledStores,['shop']);
+});
+
+test('editing market order and assigning products immediately changes shopping list order and survives reload',async()=>{
+ const opts={today:'2026-10-20',missingProduct:{id:'missing',title:'Butter',category:'Milchprodukte'}};
+ const app=openApp(opts);await app.click('tab',{tab:'plan'});
+ const day=app.html().match(/data-action="start-shopping" data-store="shop" data-day="([^"]+)"/)[1];
+ await app.click('start-shopping',{store:'shop',day});
+ assert.ok(app.html().indexOf('data-shopping-item="original"')<app.html().indexOf('data-shopping-item="missing"'));
+ await app.click('edit-market',{store:'shop'});
+ app.setValue('market-new-label','Mein Kühlregal');app.submit('market-add-area');
+ const saved=()=>JSON.parse(app.storage.get('sparnah-v1'));
+ let custom=saved().base.settings.shoppingLayouts.rewe.areas.find(a=>a.label==='Mein Kühlregal');
+ assert.ok(custom);await app.click('move-area',{area:custom.id,delta:'-99'});
+ // Input must persist before blur, so tapping a move/finish button cannot lose a name.
+ app.input({classList:{contains:c=>c==='market-area-label'},dataset:{area:custom.id},value:'Kühlregal vorne'});
+ app.change({classList:{contains:c=>c==='market-area-color'},dataset:{area:custom.id},value:'#2dd4bf'});
+ app.change({classList:{contains:c=>c==='market-product-area'},dataset:{item:'missing'},value:custom.id});
+ await app.click('market-editor-done');
+ assert.ok(app.html().indexOf('data-shopping-item="missing"')<app.html().indexOf('data-shopping-item="original"'));
+ assert.match(app.html(),/Kühlregal vorne/);
+ const reloaded=openApp({...opts,savedModel:app.storage.get('sparnah-v1')});await reloaded.click('tab',{tab:'shopping'});
+ assert.ok(reloaded.html().indexOf('data-shopping-item="missing"')<reloaded.html().indexOf('data-shopping-item="original"'));
+ const layout=JSON.parse(reloaded.storage.get('sparnah-v1')).base.settings.shoppingLayouts.rewe;
+ assert.equal(layout.areas[0].id,custom.id);assert.equal(layout.areas[0].color,'#2dd4bf');
+ assert.equal(layout.assignments.missing,custom.id);
+ await reloaded.click('edit-market',{store:'shop'});await reloaded.click('delete-area',{area:custom.id});await reloaded.click('market-editor-done');
+ assert.match(reloaded.html(),/data-shopping-item="missing"/);
+ assert.match(reloaded.html(),/<h2>Sonstiges<\/h2>/);
+});
+
+test('shopping snapshot never presents an expired price as current and market layouts stay separate',async()=>{
+ const app=openApp({today:'2026-10-20'});await app.click('tab',{tab:'plan'});
+ const day=app.html().match(/data-action="start-shopping" data-store="shop" data-day="([^"]+)"/)[1];
+ await app.click('start-shopping',{store:'shop',day});assert.match(app.html(),/class="shopping-price"/);
+ app.advanceDay();await app.click('tab',{tab:'shopping'});
+ assert.doesNotMatch(app.html(),/class="shopping-price"/);assert.match(app.html(),/Planpreis ist heute nicht bestätigt/);
+ await app.click('edit-market',{store:'shop'});await app.click('move-area',{area:'dairy',delta:'-99'});
+ await app.click('tab',{tab:'settings'});await app.click('edit-market',{store:'other'});await app.click('move-area',{area:'meat',delta:'-99'});
+ const layouts=JSON.parse(app.storage.get('sparnah-v1')).base.settings.shoppingLayouts;
+ assert.equal(layouts.rewe.areas[0].id,'dairy');assert.equal(layouts.kaufland.areas[0].id,'meat');
+ assert.doesNotMatch(app.html(),/Google Maps|Filialadresse/);
 });
