@@ -67,11 +67,35 @@
       description: `Milch verschiedener Marken · ${String(fat).replace('.', ',')} % Fett · ${packLabel(product.pack)}${processing === 'fresh' ? ' · frisch' : processing === 'long-life' ? ' · haltbar' : ''}${grazing === 'pasture' ? ' · Weidemilch' : ''}. Bio- und Laktoseangaben bleiben erhalten.`
     }));
   }
+  // Audited retailer/manufacturer naming variants, with the original net pack.
+  // A generic FRoSTA offer or merely overlapping words cannot establish a SKU.
+  const frostaMealIdentities = [
+    ['bami-goreng',500,['bami goreng','bami-goreng']],
+    ['butter-chicken',500,['butter chicken']],
+    ['chicken-fricassee',500,['huhnerfrikassee','huhner frikassee']],
+    ['potato-chicken-pan',500,['bratkartoffelpfanne mit hahnchen','bratkartoffel hahnchen pfanne']],
+    ['pasta-wild-salmon',450,['pasta wildlachs']]
+  ];
+  function frostaMealIdentity(product, brands) {
+    if (brandOf(product,brands)!=='frosta' || !packKey(product.pack) || product.pack.unit!=='g' ||
+        product.packUnconfirmed || product.groupSelection || product.isGroupChoice ||
+        dietaryKey(product)!=='ordinary:unspecified:ordinary:ordinary:ordinary') return null;
+    const line=normalize(product.line);
+    if (line && line!=='standard') return null;
+    const group=normalize(product.groupId);
+    if (/^frosta-(?:line|family):/.test(group) && !group.endsWith(':standard')) return null;
+    // Do not let a stale stored pack erase a different size printed in the title.
+    const namedSizes=[...normalize(product.title).matchAll(/\b(\d+(?:[.,]\d+)?)\s*(kg|g)\b/g)];
+    if (namedSizes.some(m=>Number(m[1].replace(',','.'))*(m[2]==='kg'?1000:1)!==product.pack.min)) return null;
+    const title=withoutBrand(product,brands).replace(/^fertiggerichte?\s*[,:\-]\s*/,'');
+    const found=frostaMealIdentities.find(([,size,names])=>size===product.pack.min&&names.includes(title));
+    return found?found[0]+':'+packKey(product.pack):null;
+  }
   function frostaProfile(product, brands) {
     if (!packKey(product.pack) || product.pack.unit !== 'g' || !/\bfrosta\b/.test(normalize(product.brand) + ' ' + normalize(product.title))) return null;
     const line = normalize(product.line), group = normalize(product.groupId), title = normalize(product.title);
     const map = { 'standard': 'standard', 'xxl': 'xxl', 'kleine gerichte': 'small', 'high protein': 'high-protein', 'a la carte': 'premium', 'premium': 'premium', 'asian style': 'asian', 'street food': 'asian', 'vegan': 'vegan', 'bio': 'bio' };
-    let family = map[line];
+    let family = map[line] || (frostaMealIdentity(product,brands)?'standard':null);
     const namedFamilies = [/high protein/.test(title) ? 'high-protein' : null, /a la carte|premium/.test(title) ? 'premium' : null, /asian style|street food/.test(title) ? 'asian' : null].filter(Boolean);
     if (namedFamilies.length > 1 || family && namedFamilies.length === 1 && family !== namedFamilies[0]) return null;
     if (!family) {
@@ -412,6 +436,13 @@
   }
   function annotateOffers(offers, products = []) {
     const byId = new Map(products.map(p => [p.id, p])), brands = knownBrands(products);
+    const frostaAliases=new Map();
+    for (const product of products) {
+      const identity=frostaMealIdentity(product,brands);
+      if (!identity) continue;
+      if (!frostaAliases.has(identity)) frostaAliases.set(identity,[]);
+      frostaAliases.get(identity).push(product);
+    }
     const basics = products.filter(p => !p.variantId && !p.brand &&
       ['aepfel','nudeln','reis','joghurt','butter','milch-35'].includes(p.groupId));
     return (offers || []).map(offer => {
@@ -422,11 +453,16 @@
       // Paper metadata must be present on this offer, not inherited from a linked
       // catalogue variant whose ply or roll count the offer never confirmed.
       for (const field of ['paperLayers','paperTotalSheets','subtitle']) if (!Object.hasOwn(offer,field)) delete candidate[field];
-      const additions = basicGroups(candidate, basics, brands).concat(profileGroups(candidate, brands));
+      const frostaIdentity=frostaMealIdentity(candidate,brands);
+      const linkedFrosta=frostaIdentity?frostaAliases.get(frostaIdentity)||[]:[];
+      const additions = basicGroups(candidate, basics, brands).concat(profileGroups(candidate, brands),
+        frostaIdentity?['frosta-meals','frosta-ready-meals',...linkedFrosta.map(p=>p.groupId).filter(Boolean)]:[]);
       if (!additions.length) return offer;
       const manufacturer = manufacturerDefinition(candidate, brands);
       return {...offer, groupIds: [...new Set([...(offer.groupIds || []), ...additions])],
-        ...(manufacturer?{variantIds:[...new Set([...(offer.variantIds||[]),'manufacturer:frosch:'+manufacturer[0]])]}:{})};
+        ...(manufacturer||frostaIdentity?{variantIds:[...new Set([...(offer.variantIds||[]),
+          ...(manufacturer?['manufacturer:frosch:'+manufacturer[0]]:[]),
+          ...linkedFrosta.map(p=>p.variantId).filter(Boolean)])]}:{})};
     });
   }
   return { getChoice, createResolver, annotateOffers, basicWishes, householdWishes, referenceProducts };

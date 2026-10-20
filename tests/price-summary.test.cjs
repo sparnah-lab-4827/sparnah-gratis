@@ -9,21 +9,83 @@ function openApp({referencePriceCents=null,originalPrice=399,today="2026-10-19",
  const data={catalog:{stores:[{id:'shop',name:'Example shop',retailerId:'rewe'},{id:'other',name:'Other shop',retailerId:'kaufland'}],products:[product,alternative,missing],offers:[...(originalPrice!==null?[price(product,originalPrice)]:[]),{...price(alternative,199),referencePriceCents}],observedAt:'2026-10-19'},assortment:{products:[],sources:{}},status:{stores:{}},leaflets:{leaflets:[]}};
  const model={base:{items:[product,missing].map(p=>({id:p.id,product:p,qty:1})),offers:[],settings:{maxStores:1,enabledStores:['shop'],knownStoreIds:['shop','other']}},photos:false};
  configureFixture(data,model);
- let shared='',planCalls=0,refreshData;
+ let shared='',planCalls=0,comparisonCalls=0,refreshData;
  const storage=new Map([['sparnah-v1',savedModel||JSON.stringify(model)]]),elements=new Map(),handlers={};
  function el(id){if(!elements.has(id))elements.set(id,{id,innerHTML:'',textContent:'',classList:{add(){},remove(){},toggle(){}},addEventListener(){},setAttribute(){},removeAttribute(){},focus(){},showModal(){this.open=true;},close(){this.open=false;}});return elements.get(id);}
  const doc={getElementById:el,addEventListener:(name,fn)=>handlers[name]=fn,visibilityState:'visible'};
  const window={document:doc,addEventListener(){},setInterval(){},scrollTo(){},SparnahVault:{getData:()=>data,getStatus:()=>({}),subscribe(fn){refreshData=fn;}}};
  for(const [key,file] of Object.entries({SparnahShopping:'shopping',SparnahLogos:'logos',SparnahEstimates:'estimates',SparnahStores:'stores',SparnahEngine:'engine',SparnahSearch:'search',SparnahChoices:'choices',SparnahSelection:'selection',SparnahUpdates:'updates',SparnahLeaflets:'leaflets'}))window[key]=require('../site/'+file+'.js');
- window.SparnahEngine={...E,berlinToday:()=>today,optimize(...args){planCalls++;return E.optimize(...args);}};
+ window.SparnahEngine={...E,berlinToday:()=>today,optimize(...args){planCalls++;return E.optimize(...args);},compareStores(...args){comparisonCalls++;return E.compareStores(...args);}};
  vm.runInNewContext(fs.readFileSync(require.resolve('../site/app.js'),'utf8'),{window,document:doc,location:{protocol:'https:'},localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)},crypto:webcrypto,Intl,URL,console,setInterval(){},setTimeout(){},clearTimeout(){},navigator:{share:async data=>{shared=data.text;}}});
- return {planCalls:()=>planCalls,advanceDay:()=>{today=E.addDays(today,1);},refresh:()=>refreshData(data),shared:()=>shared,html:()=>el('main').innerHTML,elementHtml:id=>el(id).innerHTML,confirmImport:()=>el('confirm-import').onclick(),storage,product,setValue:(id,value)=>el(id).value=value,submit:id=>handlers.submit({preventDefault(){},target:{id}}),input:target=>handlers.input({target}),change:target=>handlers.change({target:{classList:{contains:()=>false},...target}}),click:async(action,extra={})=>handlers.click({preventDefault(){},target:{closest:()=>({dataset:{action,...extra}})}})};
+ return {comparisonCalls:()=>comparisonCalls,planCalls:()=>planCalls,advanceDay:()=>{today=E.addDays(today,1);},refresh:()=>refreshData(data),shared:()=>shared,html:()=>el('main').innerHTML,elementHtml:id=>el(id).innerHTML,confirmImport:()=>el('confirm-import').onclick(),storage,product,setValue:(id,value)=>el(id).value=value,submit:id=>handlers.submit({preventDefault(){},target:{id}}),input:target=>handlers.input({target}),change:target=>handlers.change({target:{classList:{contains:()=>false},...target}}),click:async(action,extra={})=>handlers.click({preventDefault(){},target:{closest:()=>({dataset:{action,...extra}})}})};
 }
 test('normal-price partial plan explains missing prices without the misleading discount failure',async()=>{
  const app=openApp();await app.click('tab',{tab:'plan'});
  assert.match(app.html(),/Bekannte Zwischensumme/);assert.match(app.html(),/1 Preis noch offen/);
  assert.match(app.html(),/1 Preis berücksichtigt/);assert.match(app.html(),/Kein Händler-Rabatt mit höherem Vergleichspreis erfasst/);
  assert.doesNotMatch(app.html(),/Nicht belegbar|Belegte Rabatte/);
+});
+
+const bestComparison = app => app.html().match(/<div class="comparison-best">[\s\S]*?<\/div>/)?.[0]||'';
+function competingPrice(data,model,cents=249){
+ model.base.settings.enabledStores=['shop','other'];
+ model.base.settings.targetStoreId='shop';
+ data.catalog.stores[0].retailerId='aldi';
+ data.catalog.products[0].title='FRoSTA Bami Goreng';
+ model.base.items[0].product.title='FRoSTA Bami Goreng';
+ data.catalog.offers.push({...data.catalog.offers[0],id:'competing',storeId:'other',priceCents:cents,priceKind:'offer'});
+}
+test('list shows the cheaper matching Kaufland offer even when the one-store itinerary is pinned to Aldi',async()=>{
+ const app=openApp({configureFixture:competingPrice});
+ assert.match(bestComparison(app),/Kaufland · 2,49/);assert.match(bestComparison(app),/Angebot/);
+ assert.match(app.html(),/data-comparison-store="shop"[\s\S]*?ALDI · 3,99/);
+ assert.match(app.html(),/class="store-comparison"><summary>/);
+ assert.doesNotMatch(bestComparison(app),/Im Plan|ALDI/);
+ await app.click('tab',{tab:'plan'});
+ assert.match(app.html(),/data-action="start-shopping" data-store="shop"/);
+ assert.doesNotMatch(app.html(),/data-action="start-shopping" data-store="other"/);
+ await app.click('tab',{tab:'list'});
+ assert.match(bestComparison(app),/Kaufland · 2,49/);
+ assert.equal(JSON.parse(app.storage.get('sparnah-v1')).base.settings.targetStoreId,'shop');
+});
+test('list prefers a lower regular price over a dearer promotion and exposes tied stores',async()=>{
+ const app=openApp({configureFixture:(data,model)=>competingPrice(data,model,499)});
+ assert.match(bestComparison(app),/ALDI · 3,99/);assert.match(bestComparison(app),/Normalpreis/);
+ const tie=openApp({configureFixture:(data,model)=>competingPrice(data,model,399)});
+ assert.match(bestComparison(tie),/Gleicher Grundpreis: (?:ALDI, Kaufland|Kaufland, ALDI)/);
+ const futureTie=openApp({configureFixture(data,model){
+  competingPrice(data,model,399);data.catalog.offers.at(-1).start='2026-10-22';data.catalog.offers.at(-1).end='2026-10-24';
+ }});
+ assert.match(bestComparison(futureTie),/Gleicher Grundpreis: ALDI, Kaufland \(ab .*22.10.\)/);
+});
+test('missing competitor prices cannot present one known price or an estimate as the cheapest market',()=>{
+ const app=openApp({configureFixture(data,model){
+  competingPrice(data,model);data.catalog.offers=data.catalog.offers.filter(o=>o.id!=='competing');
+ }});
+ assert.match(bestComparison(app),/Erfasster Preis/);assert.doesNotMatch(bestComparison(app),/Günstigster/);
+ assert.match(app.html(),/<summary>Kaufland: Preis offen<\/summary>/);
+ assert.match(app.html(),/Fehlende Preise bedeuten weder teurer noch nicht erhältlich/);
+ const missing=openApp({today:'2026-10-20',originalPrice:null,missingProduct:{id:'missing',title:'Butter'},configureFixture(data,model){
+  model.base.settings.enabledStores=['shop','other'];
+ }});
+ assert.equal(bestComparison(missing),'');assert.match(missing.html(),/Geschätzt ca./);
+ assert.match(missing.html(),/<summary>REWE, Kaufland: Preis offen<\/summary>/);
+});
+test('comparison refreshes for store subscriptions, validity dates, quantities and catalog replacements',async()=>{
+ const app=openApp({configureFixture:competingPrice});
+ app.change({id:'',classList:{contains:()=>true},checked:false,dataset:{store:'other'}});
+ assert.match(bestComparison(app),/ALDI · 3,99/);assert.doesNotMatch(app.html(),/data-comparison-store="other"/);
+ app.change({id:'',classList:{contains:()=>true},checked:true,dataset:{store:'other'}});
+ assert.match(bestComparison(app),/Kaufland · 2,49/);
+ await app.click('quantity',{id:'original',delta:'1'});assert.match(app.html(),/2 Packungen: 4,98/);
+ app.advanceDay();await app.click('tab',{tab:'list'});
+ assert.equal(bestComparison(app),'','yesterday’s prices cannot remain selected');
+ const future=openApp({configureFixture(data,model){
+  competingPrice(data,model);data.catalog.offers.at(-1).start='2026-10-22';data.catalog.offers.at(-1).end='2026-10-24';
+ }});
+ assert.match(bestComparison(future),/ab .*22.10./);
+ const refreshed=openApp({configureFixture:competingPrice});
+ const count=refreshed.comparisonCalls();refreshed.refresh();assert.ok(refreshed.comparisonCalls()>count);
 });
 test('button shows real per-kilo comparison in list and plan and exact choice is reversible',async()=>{
  const app=openApp();await app.click('all-cheapest');
@@ -134,10 +196,14 @@ test('group photos stay labelled examples and disabled photos remain symbols',as
 });
 
 test('cached plan is reused across views and invalidated by quantity, selection, day and catalog updates',async()=>{
- const app=openApp();const initial=app.planCalls();
+ const app=openApp();assert.equal(app.planCalls(),0,'individual prices must not calculate a basket itinerary');
+ const comparisons=app.comparisonCalls();
+ await app.click('tab',{tab:'plan'});const initial=app.planCalls();
  await app.click('tab',{tab:'plan'});await app.click('tab',{tab:'list'});
- assert.equal(app.planCalls(),initial);
- await app.click('quantity',{id:'original',delta:'1'});assert.equal(app.planCalls(),initial+1);
+ assert.equal(app.planCalls(),initial);assert.equal(app.comparisonCalls(),comparisons);
+ await app.click('quantity',{id:'original',delta:'1'});
+ assert.ok(app.comparisonCalls()>comparisons);assert.equal(app.planCalls(),initial);
+ await app.click('tab',{tab:'plan'});assert.equal(app.planCalls(),initial+1);
  await app.click('all-cheapest');assert.equal(app.planCalls(),initial+2);
  app.change({id:'',classList:{contains:()=>true},checked:true,dataset:{store:'other'}});
  assert.equal(app.planCalls(),initial+3);
@@ -201,7 +267,7 @@ test('shopping visit includes unpriced items and selected alternatives, and chec
  assert.match(reloaded.html(),/Einkauf fortsetzen/);await reloaded.click('tab',{tab:'shopping'});
  assert.match(reloaded.html(),/2 von 2 im Wagen/);assert.match(reloaded.html(),/House Nuss-Nougat-Creme/);
  const beforeFinish=reloaded.planCalls();await reloaded.click('finish-shopping');
- assert.equal(reloaded.planCalls(),beforeFinish+1);
+ assert.equal(reloaded.planCalls(),beforeFinish,'returning to an empty list needs no itinerary calculation');
  const final=JSON.parse(reloaded.storage.get('sparnah-v1'));
  assert.equal(final.shoppingSession,undefined);assert.ok(final.base.items.every(i=>i.deleted));
  assert.doesNotMatch(reloaded.html(),/class="list-row/);

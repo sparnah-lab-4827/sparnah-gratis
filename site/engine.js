@@ -71,13 +71,87 @@
       .map(o => ({ offer: o, match: match(product, o) })).filter(x => x.match.status !== 'none')
       .sort((a, b) => (a.match.status === 'uncertain') - (b.match.status === 'uncertain') || comparisonCost(product,a.offer,quantity)-comparisonCost(product,b.offer,quantity) || a.offer.priceCents-b.offer.priceCents);
   }
+  const comparableUnits=new Set(['g','ml','St','St.','Blatt','Wl']);
+  function variableComparablePack(product) {
+    const pack=product?.pack;
+    return !!pack&&comparableUnits.has(pack.unit)&&Number.isFinite(pack.min)&&pack.min>0&&Number.isFinite(pack.max)&&pack.max>pack.min;
+  }
   function comparisonCost(product,offer,quantity){
-    const reference=product.referencePack,actual=offer.pack;
-    // Compare alternatives at the original requested weight; payable totals stay actual cents.
-    return product.compareByUnit&&reference&&actual&&reference.min===reference.max&&reference.min>0&&actual.min===actual.max&&actual.min>0&&actual.unit===reference.unit
+    const reference=product.compareByUnit?product.referencePack:variableComparablePack(product)?{...product.pack,max:product.pack.min}:null,actual=offer.pack;
+    // An existing allowed size range already permits its concrete packs. Compare
+    // their unit prices just as for explicit alternatives, without widening the
+    // match. Payable totals remain the actual pack price times quantity.
+    return reference&&actual&&!offer.packUnconfirmed&&comparableUnits.has(reference.unit)&&
+      Number.isFinite(reference.min)&&reference.min===reference.max&&reference.min>0&&
+      Number.isFinite(actual.min)&&actual.min===actual.max&&actual.min>0&&actual.unit===reference.unit
       ? offer.priceCents*quantity*reference.min/actual.min : offer.priceCents*quantity;
   }
   function storeOpenOn(store,day){return !(store.closedDates||[]).includes(day)&&!(store.temporaryClosureUntil&&day<=store.temporaryClosureUntil&&(!store.temporaryClosureFrom||day>=store.temporaryClosureFrom));}
+  // Product-level price comparison is independent of the chosen basket route.
+  // "all-selected" means a recorded matching price exists for every selected
+  // store; it never establishes complete coverage of those stores' prices.
+  function compareStores(product, offers, stores, options = {}) {
+    const quantity = options.quantity === undefined ? 1 : options.quantity;
+    const weekStart = options.weekStart || nextMonday(), notBefore = options.notBefore || weekStart;
+    const requested = options.enabledStores ?? options.storeIds ?? stores.map(store=>store.id);
+    const selectedStoreIds = [...new Set(requested.filter(id=>typeof id==='string'&&id))];
+    const byStore = new Map(stores.map(store=>[store.id,store]));
+    const days = daysOfWeek(weekStart).filter(day=>day>=notBefore);
+    const openDays = new Map(selectedStoreIds.map(id=>[id,byStore.has(id)?days.filter(day=>storeOpenOn(byStore.get(id),day)):[]]));
+    const compareRows = (a,b) => a.compareCost-b.compareCost || a.cost-b.cost || a.deposit-b.deposit ||
+      a.day.localeCompare(b.day) || a.storeId.localeCompare(b.storeId) || String(a.offer.id||'').localeCompare(String(b.offer.id||''));
+    const chosen = new Map(), candidates=[];
+    if (product && Number.isInteger(quantity) && quantity>0) {
+      for (const candidate of bestOffers(product,offers,{quantity,weekStart,storeIds:selectedStoreIds,notBefore})) {
+        if (!['exact','group'].includes(candidate.match.status)) continue;
+        const offer=candidate.offer, pack=offer.pack;
+        // A price with an unidentified or ambiguous pack cannot substantiate
+        // a cheapest-store result, even for a wish without an explicit size.
+        if (!pack || !Number.isFinite(pack.min) || pack.min<=0 || pack.min!==pack.max || typeof pack.unit!=='string' || !pack.unit) continue;
+        const validDays=(openDays.get(offer.storeId)||[]).filter(day=>validOn(offer,day));
+        if (!validDays.length) continue;
+        candidates.push({offer,store:byStore.get(offer.storeId),storeId:offer.storeId,day:validDays[0],validDays,
+          cost:offer.priceCents*quantity,deposit:(offer.depositCents||0)*quantity,
+          match:candidate.match.status,future:validDays[0]>notBefore});
+      }
+    }
+    const validReference=pack=>pack&&Number.isFinite(pack.min)&&pack.min>0&&pack.max>=pack.min&&comparableUnits.has(pack.unit);
+    const units=[...new Set(candidates.map(row=>row.offer.pack.unit))];
+    const suppliedReference=validReference(product?.referencePack)&&(!product.pack||product.referencePack.unit===product.pack.unit)
+      ?product.referencePack:validReference(product?.pack)?product.pack:null;
+    // Matching decides which pack sizes the user allowed. Ranking then uses a
+    // common unit even for pre-existing broad wishes without compareByUnit.
+    // Without a requested size, prices in different units cannot be compared.
+    const reference=suppliedReference?{min:suppliedReference.min,max:suppliedReference.min,unit:suppliedReference.unit}
+      :units.length===1&&comparableUnits.has(units[0])?{min:1,max:1,unit:units[0]}:null;
+    if (reference) for (const row of candidates) {
+      if (row.offer.pack.unit!==reference.unit) continue;
+      row.compareCost=comparisonCost({compareByUnit:true,referencePack:reference},row.offer,quantity);
+      const previous=chosen.get(row.storeId);
+      if (!previous || compareRows(row,previous)<0) chosen.set(row.storeId,row);
+    }
+    const ranked=[...chosen.values()].sort(compareRows), best=ranked[0]||null;
+    const wish=options.requestedProduct;
+    for (const row of ranked) {
+      const have=row.offer.pack;
+      if (!wish || wish.groupId===product.groupId || !wish.pack ||
+        !['g','ml'].includes(have.unit) || have.unit!==wish.pack.unit || wish.pack.min!==wish.pack.max || wish.pack.min<=0) continue;
+      const original=offers.filter(offer=>offer.storeId===row.storeId && validOn(offer,row.day) && offerUsable(offer,quantity) &&
+        !offer.packUnconfirmed && offer.pack?.min===offer.pack?.max && offer.pack?.min>0 &&
+        (offer.productId===wish.id || wish.variantId) && ['exact','group'].includes(match(wish,offer).status))
+        .sort((a,b)=>a.priceCents/a.pack.min-b.priceCents/b.pack.min)[0];
+      if (!original || original.priceCents<=0) continue;
+      const before=original.priceCents/original.pack.min, after=row.offer.priceCents/have.min;
+      if (after<before) row.unitSaving={originalOffer:original,percent:100*(before-after)/before};
+    }
+    const ties=best?ranked.filter(row=>Math.abs(row.compareCost-best.compareCost)<1e-9):[];
+    const coveredStoreIds=ranked.map(row=>row.storeId), missingStoreIds=selectedStoreIds.filter(id=>!chosen.has(id));
+    return {product,quantity,weekStart,notBefore,ranked,best,ties,selectedStoreIds,coveredStoreIds,missingStoreIds,
+      closedStoreIds:selectedStoreIds.filter(id=>days.length>0&&byStore.has(id)&&!(openDays.get(id)||[]).length),
+      hasPriceForEverySelectedStore:selectedStoreIds.length>0&&!missingStoreIds.length,
+      coverageState:!ranked.length?'none':missingStoreIds.length?'partial':'all-selected',
+      scope:'recorded-selected-store-prices',comparisonBasis:reference?'unit':'pack'};
+  }
   function expandOffers(offers,stores){
     const known=new Set(stores.map(s=>s.id));
     return offers.flatMap(o=>Array.isArray(o.applicableStoreIds)&&o.applicableStoreIds.length?[...new Set([o.storeId,...o.applicableStoreIds])].filter(id=>known.has(id)).map(id=>id===o.storeId?o:{...o,id:o.id+':'+id,storeId:id,originOfferId:o.id}):[o]);
@@ -217,7 +291,7 @@
     const visitDays = [...new Set(visits.map(visit => visit.day))].sort();
     const referenced = known.filter(l => Number.isSafeInteger(l.offer.referencePriceCents) && l.offer.referencePriceCents >= l.offer.priceCents);
     const referenceSavings = referenced.length ? referenced.reduce((n, l) => n + (l.offer.referencePriceCents - l.offer.priceCents) * l.item.qty, 0) : null;
-    const complete = result.coverage === active.length,unitComparisons=active.some(i=>i.product.compareByUnit);
+    const complete = result.coverage === active.length,unitComparisons=active.some(i=>i.product.compareByUnit||variableComparablePack(i.product));
     return { ...result, weekStart, notBefore, count: active.length, complete, empty: false, unknown,
       visits, usedCount: visits.length, dayCount: visitDays.length,
       latest: visitDays[visitDays.length - 1] || result.latest, dayKey: visitDays.join(','),
@@ -229,5 +303,5 @@
       evaluated, assumptions: { allowSplitDays: !!options.allowSplitDays, maxStores, notBefore, oneVisitPerStore: true, travelCostsIncluded: false }
     };
   }
-  return { storeOpenOn, expandOffers, berlinToday, nextMonday, mondayOf, addDays, daysOfWeek, validOn, overlapsWeek, match, offerUsable, money, shortDate, packLabel, unitPrice, bestOffers, optimize };
+  return { storeOpenOn, compareStores, expandOffers, berlinToday, nextMonday, mondayOf, addDays, daysOfWeek, validOn, overlapsWeek, match, offerUsable, money, shortDate, packLabel, unitPrice, bestOffers, optimize };
 });
