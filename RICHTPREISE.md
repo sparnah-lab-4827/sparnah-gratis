@@ -50,8 +50,9 @@ Aktualisierung an; es ist kein wiederkehrender Auftrag eingerichtet.
    Kilopreis wird dann nicht dargestellt.
 5. JavaScript-Tests und Python-Pipelinetests ausführen. Shell-Version anheben,
    Website veröffentlichen und neue APK mit demselben Signaturschlüssel sowie
-   höherem versionCode erstellen. APK mit Datum und Uhrzeit (Europe/Berlin)
-   ausliefern.
+   höherem versionCode erstellen. APK mit ihrer tatsächlichen Versionsnummer
+   ausliefern, etwa `Sparnah-v1.0.13.apk`, danach fortlaufend hochzählen.
+   Auf Nutzerwunsch stehen Datum und Uhrzeit nicht mehr im Dateinamen.
 
 ## Trennung von bestätigten Preisen
 
