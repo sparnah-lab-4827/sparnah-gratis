@@ -6,17 +6,17 @@ function openApp({referencePriceCents=null,originalPrice=399,today="2026-10-19",
  const alternative={id:'own',groupId:'own',variantId:'own400',title:'House Nuss-Nougat-Creme',brand:'House',pack:{min:400,max:400,unit:'g'}};
  const missing=missingProduct||{id:'missing',title:'Unpriced food',groupId:'missing'};
  const price=(p,cents)=>({id:p.id,productId:p.id,title:p.title,brand:p.brand,groupIds:[p.groupId],variantIds:[p.variantId],pack:p.pack,priceCents:cents,priceKind:'regular',storeId:'shop',start:today,end:today,verification:'source',sourceUrl:'https://example.com/price/'+p.id});
- const data={catalog:{stores:[{id:'shop',name:'Example shop'},{id:'other',name:'Other shop'}],products:[product,alternative,missing],offers:[...(originalPrice!==null?[price(product,originalPrice)]:[]),{...price(alternative,199),referencePriceCents}],observedAt:'2026-10-19'},assortment:{products:[],sources:{}},status:{stores:{}},leaflets:{leaflets:[]}};
+ const data={catalog:{stores:[{id:'shop',name:'Example shop',retailerId:'rewe'},{id:'other',name:'Other shop',retailerId:'kaufland'}],products:[product,alternative,missing],offers:[...(originalPrice!==null?[price(product,originalPrice)]:[]),{...price(alternative,199),referencePriceCents}],observedAt:'2026-10-19'},assortment:{products:[],sources:{}},status:{stores:{}},leaflets:{leaflets:[]}};
  const model={base:{items:[product,missing].map(p=>({id:p.id,product:p,qty:1})),offers:[],settings:{maxStores:1,enabledStores:['shop'],knownStoreIds:['shop','other']}},photos:false};
  let shared='',planCalls=0,refreshData;
  const storage=new Map([['sparnah-v1',JSON.stringify(model)]]),elements=new Map(),handlers={};
  function el(id){if(!elements.has(id))elements.set(id,{id,innerHTML:'',textContent:'',classList:{add(){},remove(){},toggle(){}},addEventListener(){},setAttribute(){},removeAttribute(){},focus(){}});return elements.get(id);}
  const doc={getElementById:el,addEventListener:(name,fn)=>handlers[name]=fn,visibilityState:'visible'};
  const window={document:doc,addEventListener(){},setInterval(){},scrollTo(){},SparnahVault:{getData:()=>data,getStatus:()=>({}),subscribe(fn){refreshData=fn;}}};
- for(const [key,file] of Object.entries({SparnahEstimates:'estimates',SparnahStores:'stores',SparnahEngine:'engine',SparnahSearch:'search',SparnahChoices:'choices',SparnahSelection:'selection',SparnahUpdates:'updates',SparnahLeaflets:'leaflets'}))window[key]=require('../site/'+file+'.js');
+ for(const [key,file] of Object.entries({SparnahLogos:'logos',SparnahEstimates:'estimates',SparnahStores:'stores',SparnahEngine:'engine',SparnahSearch:'search',SparnahChoices:'choices',SparnahSelection:'selection',SparnahUpdates:'updates',SparnahLeaflets:'leaflets'}))window[key]=require('../site/'+file+'.js');
  window.SparnahEngine={...E,berlinToday:()=>today,optimize(...args){planCalls++;return E.optimize(...args);}};
  vm.runInNewContext(fs.readFileSync(require.resolve('../site/app.js'),'utf8'),{window,document:doc,location:{protocol:'https:'},localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)},crypto:webcrypto,Intl,URL,console,setInterval(){},setTimeout(){},clearTimeout(){},navigator:{share:async data=>{shared=data.text;}}});
- return {planCalls:()=>planCalls,advanceDay:()=>{today=E.addDays(today,1);},refresh:()=>refreshData(data),shared:()=>shared,html:()=>el('main').innerHTML,storage,product,change:target=>handlers.change({target:{classList:{contains:()=>false},...target}}),click:async(action,extra={})=>handlers.click({preventDefault(){},target:{closest:()=>({dataset:{action,...extra}})}})};
+ return {planCalls:()=>planCalls,advanceDay:()=>{today=E.addDays(today,1);},refresh:()=>refreshData(data),shared:()=>shared,html:()=>el('main').innerHTML,elementHtml:id=>el(id).innerHTML,storage,product,change:target=>handlers.change({target:{classList:{contains:()=>false},...target}}),click:async(action,extra={})=>handlers.click({preventDefault(){},target:{closest:()=>({dataset:{action,...extra}})}})};
 }
 test('normal-price partial plan explains missing prices without the misleading discount failure',async()=>{
  const app=openApp();await app.click('tab',{tab:'plan'});
@@ -88,4 +88,37 @@ test('cached plan is reused across views and invalidated by quantity, selection,
  assert.equal(app.planCalls(),initial+3);
  app.advanceDay();await app.click('tab',{tab:'plan'});assert.equal(app.planCalls(),initial+4);
  app.refresh();assert.equal(app.planCalls(),initial+5);
+});
+
+test('mobile navigation keeps the plan directly accessible and moves setup behind the gear',async()=>{
+ const app=openApp();
+ const nav=()=>app.elementHtml('bottom-nav');
+ assert.equal((nav().match(/class="nav-item/g)||[]).length,5);
+ assert.match(nav(),/data-tab="plan"/);assert.doesNotMatch(nav(),/data-tab="stores"|data-tab="settings"/);
+ assert.match(app.elementHtml('header'),/aria-label="Einstellungen und Händlerauswahl"/);
+ await app.click('tab',{tab:'plan'});
+ assert.match(nav(),/class="nav-item active" data-action="tab" data-tab="plan"/);
+ assert.doesNotMatch(app.html(),/id="plan-destination"/);
+ await app.click('tab',{tab:'settings'});
+ assert.match(app.html(),/id="plan-destination"/);assert.match(app.html(),/id="split-days"/);
+ assert.match(app.html(),/data-action="max-stores"/);assert.match(app.html(),/class="store-toggle"/);
+ assert.match(app.html(),/data-tab="stores"/);
+ await app.click('pick-store',{control:'plan-destination',value:'shop'});
+ assert.equal(JSON.parse(app.storage.get('sparnah-v1')).base.settings.targetStoreId,'shop');
+});
+test('logo pickers in offers and brands follow selected stores and apply the chosen filter',async()=>{
+ const app=openApp();
+ for(const [tab,control] of [['offers','offer-store'],['brands','brand-store']]){
+  await app.click('tab',{tab});
+  assert.match(app.html(),/src="logos\/rewe.svg"/);assert.doesNotMatch(app.html(),/src="logos\/kaufland.png"/);
+  assert.match(app.html(),/data-action="pick-store"/);
+  await app.click('pick-store',{control,value:'shop'});
+  assert.match(app.html(),new RegExp('id="'+control+'-button" aria-label="Geschäft auswählen: REWE"'));
+  assert.match(app.html(),/data-value="shop" aria-pressed="true"/);
+  await app.click('pick-store',{control,value:'all'});
+  assert.match(app.html(),/data-value="all" aria-pressed="true"/);
+ }
+ for(const tab of ['stores','settings','plan','list']){
+  await app.click('tab',{tab});assert.match(app.html(),/src="logos\/rewe.svg"/);
+ }
 });

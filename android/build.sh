@@ -8,7 +8,8 @@ out="${RUNNER_TEMP:-/tmp}/sparnah-android"
 mkdir -p "$out/classes" "$out/dex" "$out/gen" "$out/res/drawable" "$out/assets/site" "$out/dist"
 cp site/icon-192.png "$out/res/drawable/icon.png"
 # Deliberate allowlist: never package encrypted regional datasets or keys.
-for file in index.html styles.css engine.js estimates.js search.js leaflets.js stores.js choices.js selection.js updates.js vault.js install.js app.js sw.js manifest.webmanifest icon.svg icon-192.png icon-512.png; do cp "site/$file" "$out/assets/site/$file"; done
+for file in index.html styles.css engine.js estimates.js search.js leaflets.js stores.js logos.js choices.js selection.js updates.js vault.js install.js app.js sw.js manifest.webmanifest icon.svg icon-192.png icon-512.png; do cp "site/$file" "$out/assets/site/$file"; done
+cp -R site/logos "$out/assets/site/logos"
 "$tools/aapt2" compile --dir "$out/res" -o "$out/resources.zip"
 "$tools/aapt2" link -o "$out/base.apk" --manifest android/AndroidManifest.xml --replace-version --version-code "${GITHUB_RUN_NUMBER:-1}" --version-name "1.0.${GITHUB_RUN_NUMBER:-1}" -I "$platform" --java "$out/gen" -A "$out/assets" "$out/resources.zip"
 find android/src "$out/gen" -name '*.java' > "$out/sources.txt"

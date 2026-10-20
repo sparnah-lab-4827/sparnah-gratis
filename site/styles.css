@@ -62,3 +62,33 @@
 .guide-table{overflow-x:auto;margin-top:12px}
 .guide-table table{border-collapse:collapse;width:100%;text-align:left;font-size:13px}
 .guide-table td,.guide-table th{padding:9px;border-bottom:1px solid #ddd}
+.store-badge.retailer-logo{width:42px;height:30px;padding:2px;background:#fff;border:1px solid #eee;border-radius:5px;overflow:hidden}
+.store-badge.retailer-logo img{display:block;width:100%;height:100%;object-fit:contain}
+.offer-line .retailer-logo{width:30px;height:22px;vertical-align:middle;margin-right:5px}
+.store-picker-wrap{min-width:0;position:relative}
+.store-picker-wrap>select[hidden]{display:none!important}
+.store-picker{position:relative;min-width:0}
+.store-picker[open]{z-index:35}
+.store-picker>summary{min-height:48px;display:flex;align-items:center;gap:9px;padding:9px 12px;border:1px solid var(--line);border-radius:11px;background:#fff;cursor:pointer;list-style:none}
+.store-picker>summary::-webkit-details-marker{display:none}
+.store-picker>summary>span:not(.store-badge){flex:1;min-width:0;overflow-wrap:anywhere}
+.store-picker>summary>.icon:last-child{width:16px;height:16px;transform:rotate(90deg)}
+.store-picker[open]>summary>.icon:last-child{transform:rotate(-90deg)}
+.store-picker-options{position:absolute;left:0;right:0;top:calc(100% + 5px);max-height:min(55vh,350px);overflow:auto;overscroll-behavior:contain;padding:5px;border:1px solid var(--line);border-radius:12px;background:#fff;box-shadow:0 10px 28px #173e2926}
+.store-picker-options>button{display:flex;align-items:center;gap:10px;min-height:48px;width:100%;padding:9px;text-align:left;border-radius:7px}
+.store-picker-options>button>span:not(.store-badge){flex:1;min-width:0;overflow-wrap:anywhere}
+.store-picker-options>button:hover,.store-picker-options>button[aria-pressed=true]{background:var(--green-light);color:var(--green)}
+.offer-toolbar>.store-picker-wrap{width:250px;max-width:100%}
+.brand-shop-label{min-width:220px}
+.search-filters .search-filter-label{flex:1;min-width:0;font-size:11px;color:var(--muted)}
+.search-filters .store-picker-wrap{margin-top:4px;color:var(--text)}
+.header-settings{display:grid;place-items:center;min-width:44px;min-height:44px;border:1px solid var(--line);border-radius:12px;background:#fff;color:var(--green)}
+.header-settings.active{background:var(--green-light)}
+@media(max-width:700px){
+ .header-right{gap:8px}.header-right .sync-pill{display:none}
+ .offer-toolbar>.store-picker-wrap{width:100%}
+ .store-picker>summary{font-size:13px}
+ .bottom-nav .nav-item{font-size:10px;padding:7px 3px;min-height:52px}
+ .bottom-nav .nav-label{white-space:nowrap}
+ .offer-card .store-badge.retailer-logo{width:34px;height:25px}
+}

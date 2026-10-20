@@ -17,7 +17,7 @@ import org.json.JSONObject;
 public final class MainActivity extends Activity {
     private static final String HOME = "https://sparnah-lab-4827.github.io/sparnah-gratis/";
     private static final int OPEN_FILE = 10, SAVE_FILE = 11;
-    private final Set<String> shell = new HashSet<>(Arrays.asList("index.html","styles.css","engine.js","estimates.js","search.js","leaflets.js","stores.js","choices.js","selection.js","updates.js","vault.js","install.js","app.js","sw.js","manifest.webmanifest","icon.svg","icon-192.png","icon-512.png"));
+    private final Set<String> shell = new HashSet<>(Arrays.asList("index.html","styles.css","engine.js","estimates.js","search.js","leaflets.js","stores.js","logos.js","logos/rewe.svg","logos/aldi.ico","logos/edeka.ico","logos/kaufland.png","logos/lidl.svg","logos/netto.svg","logos/norma.png","logos/denns.svg","logos/ebl.png","logos/mixmarkt.ico","logos/fraenky.png","logos/fristo.png","choices.js","selection.js","updates.js","vault.js","install.js","app.js","sw.js","manifest.webmanifest","icon.svg","icon-192.png","icon-512.png"));
     private WebView web;
     private ValueCallback<Uri[]> fileCallback;
     private String pendingJson;
@@ -87,7 +87,7 @@ public final class MainActivity extends Activity {
         if(path.isEmpty())path="index.html";
         if(!shell.contains(path))return null;
         byte[] body=null;
-        File cached=new File(getCacheDir(),"shell-"+path);
+        File cached=new File(getCacheDir(),"shell-"+path.replace('/','_'));
         HttpURLConnection conn=null;
         try{
             conn=(HttpURLConnection)new URL(HOME+path).openConnection();
@@ -98,7 +98,7 @@ public final class MainActivity extends Activity {
         }catch(Exception ignored){}finally{if(conn!=null)conn.disconnect();}
         if(body==null){synchronized(this){try(InputStream input=new FileInputStream(cached)){body=read(input,3000000);}catch(Exception ignored){}}}
         if(body==null){try(InputStream input=getAssets().open("site/"+path)){body=read(input,3000000);}catch(Exception ignored){return null;}}
-        String mime=path.endsWith(".js")?"text/javascript":path.endsWith(".css")?"text/css":path.endsWith(".png")?"image/png":path.endsWith(".svg")?"image/svg+xml":path.endsWith(".webmanifest")?"application/manifest+json":"text/html";
+        String mime=path.endsWith(".js")?"text/javascript":path.endsWith(".css")?"text/css":path.endsWith(".png")?"image/png":path.endsWith(".ico")?"image/x-icon":path.endsWith(".svg")?"image/svg+xml":path.endsWith(".webmanifest")?"application/manifest+json":"text/html";
         Map<String,String> headers=new HashMap<>();
         headers.put("Content-Security-Policy","frame-src 'none'; object-src 'none'; base-uri 'self'");
         headers.put("X-Content-Type-Options","nosniff");
