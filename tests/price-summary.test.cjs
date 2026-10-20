@@ -98,6 +98,41 @@ test('Soba without a merchant price gets a labelled pack estimate in list, plan 
  assert.deepEqual(JSON.parse(app.storage.get('sparnah-v1')).base.settings.enabledStores,['shop']);
 });
 
+test('an old shopping session reloads the exact Soba photo without changing the saved wish or pack',async()=>{
+ const savedProduct={id:'manufacturer:nissin:soba-fixture',title:'Nissin Soba Bag Classic',brand:'Nissin',variantId:'soba-fixture',groupId:'soba-fixture',pack:{min:109,max:109,unit:'g'},image:null};
+ const photo='https://example.com/nissin-original.png';
+ const opts={today:'2026-10-20',missingProduct:structuredClone(savedProduct),configureFixture(data,model){
+  model.photos=true;
+  const current=data.catalog.products.find(p=>p.id===savedProduct.id);
+  current.image=photo;current.imagePack={...savedProduct.pack};
+  model.base.items.find(i=>i.id===savedProduct.id).product={...savedProduct};
+ }};
+ const app=openApp(opts);await app.click('tab',{tab:'plan'});
+ const day=app.html().match(/data-action="start-shopping" data-store="shop" data-day="([^"]+)"/)[1];
+ await app.click('start-shopping',{store:'shop',day});
+ const row=app.html().match(/<article[^>]*data-shopping-item="manufacturer:nissin:soba-fixture"[\s\S]*?<\/article>/)[0];
+ assert.match(row,/src="https:\/\/example.com\/nissin-original.png"/);
+ assert.match(row,/109 g/);assert.doesNotMatch(row,/Beispielbild/);
+ const saved=JSON.parse(app.storage.get('sparnah-v1'));
+ assert.deepEqual(saved.base.items.find(i=>i.id===savedProduct.id).product,savedProduct);
+ const changed=openApp({...opts,savedModel:JSON.stringify(saved),configureFixture(data,model){
+  opts.configureFixture(data,model);data.catalog.products.find(p=>p.id===savedProduct.id).imagePack={min:90,max:90,unit:'g'};
+ }});
+ await changed.click('tab',{tab:'shopping'});assert.doesNotMatch(changed.html(),/nissin-original\.png/);
+});
+
+test('group photos stay labelled examples and disabled photos remain symbols',async()=>{
+ const group={id:'soba-group-bag',title:'Nissin Soba Bag / Beutel',brand:'Nissin',groupId:'soba-group-bag',isGroupChoice:true,image:'https://example.com/group.png',imageKind:'group-representative'};
+ for(const photos of [true,false]){
+  const app=openApp({today:'2026-10-20',missingProduct:group,configureFixture(data,model){model.photos=photos;}});
+  await app.click('tab',{tab:'plan'});
+  const day=app.html().match(/data-action="start-shopping" data-store="shop" data-day="([^"]+)"/)[1];
+  await app.click('start-shopping',{store:'shop',day});
+  if(photos)assert.match(app.html(),/<small class="thumb-label">Beispielbild<\/small>/);
+  else assert.doesNotMatch(app.html(),/group\.png|class="thumb-label"/);
+ }
+});
+
 test('cached plan is reused across views and invalidated by quantity, selection, day and catalog updates',async()=>{
  const app=openApp();const initial=app.planCalls();
  await app.click('tab',{tab:'plan'});await app.click('tab',{tab:'list'});

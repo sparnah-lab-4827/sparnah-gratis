@@ -3,9 +3,14 @@
 Die Richtpreisliste umfasst die bisherigen 36 eng zugeordneten Beispiele in
 `site/estimates.js` und eine größere Momentaufnahme in
 `site/estimate-references.js`: 2.070 am 20.10.2026 beobachtete öffentliche
-ALDI-SÜD-Normalpreise sowie 85 ergänzend recherchierte Referenzen für bisher
+ALDI-SÜD-Normalpreise sowie 99 ergänzend recherchierte Referenzen für bisher
 fehlende Produktgruppen, unter anderem Instantgerichte, Obst, Gemüse und
-Haushaltspapier. Jede Referenz enthält Preis, Packung, Quelle und Prüfdatum.
+Haushaltspapier, Reiniger und weitere Haushaltsprodukte. Jede Referenz enthält
+Preis, Packung, Quelle und Prüfdatum. Die fünf Frosch-Herstellerprodukte und
+zwölf allgemeinen Haushaltswünsche erhalten daraus gekennzeichnete Budgets.
+Spray, Nachfüllung und Konzentrat, Papierart und Lagenzahl sowie Beutelvolumen
+und Backpapierformat bleiben bei der Zuordnung getrennt. Papierpreise werden
+je 100 Blatt angezeigt; Körpergewichte bei Windeln gelten nicht als Packungsgewicht.
 Die sichtbaren und strukturierten ALDI-Preise wurden beim Import gegengeprüft;
 Aktionspreise werden nicht zu angeblichen Normalpreisen umgedeutet.
 Bei fünf Salatkrönung-Einträgen beschreibt die Händler-Mengenangabe die

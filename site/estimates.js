@@ -160,6 +160,65 @@
   const categoryMedianAllowed=new Set(['desserts','pudding','naturjoghurt','butter','milch','eier','mineralwasser','kaffee','tee','toilettenpapier','kuchenrollen','speisesalz']);
   const stopWords=new Set('und oder mit ohne der die das ein eine fein feine feiner frisch frische frischer original classic verschiedene sorten alle sorte premium gourmet bio vegan vegetarisch extra xxl big bag cup protein pro beutel packung je am im zum zumal nach art alkoholfrei glutenfrei laktosefrei traditionell klassisch spezial top mild natur style'.split(' '));
   function words(title){return new Set(title.split(' ').filter(word=>word.length>=3&&!/^\d/.test(word)&&!stopWords.has(word)));}
+  function householdFamily(value){
+    const title=norm(value);
+    const rules=[
+      ['toilet-paper',/\btoilettenpapier\b/],['kitchen-paper',/\b(?:kuchenpapier|kuchenroll\w*|kuchentucher)\b/],
+      ['glass-cleaner',/\bglas ?reiniger\b/],['all-purpose-cleaner',/\ballzweck ?reiniger\b/],
+      ['vinegar-cleaner',/\bessig ?reiniger\b/],['neutral-cleaner',/\bneutral ?reiniger\b/],
+      ['bath-cleaner',/\b(?:bad ?reiniger|dusche ?bad ?reiniger)\b/],
+      ['dishwasher-salt',/\b(?:spulmaschinen ?salz|geschirrspulsalz)\b/],
+      ['dishwasher-tablets',/\b(?:spulmaschinen ?tabs?|geschirrspultabs|maschinengeschirr ?reiniger)\b/],
+      ['hand-dishwashing-liquid',/\b(?:handspulmittel|geschirrspulmittel|spulmittel)\b/],
+      ['liquid-soap',/\b(?:flussigseife|handseife|cremeseife)\b/],['shampoo',/\bshampoo\b/],
+      ['toothpaste',/\b(?:zahnpasta|zahncreme)\b/],['diapers',/\b(?:windeln?|pants)\b/],
+      ['bin-bags',/\b(?:mullbeutel|mullsa?cke)\b/],['baking-paper',/\bbackpapier\b/],
+      ['sponges',/\b(?:spulschwamme|geschirrschwamme)\b/],['cleaning-wipes',/\b(?:allzwecktucher|reinigungstucher)\b/],
+      ['laundry-detergent',/\b(?:color|voll|fein)?waschmittel\b/]
+    ];
+    return rules.find(([,pattern])=>pattern.test(title))?.[0]||'';
+  }
+  function householdProfile(product){
+    const title=norm(String(product.title||product.label||'').replace(/×/g,'x')),kind=householdFamily(title);
+    if(!kind)return null;
+    const text=title+' '+norm(product.productForm);
+    const concentrate=product.concentrated===true||/\b(?:konzentrat\w*|(?:hoch)?konzentriert\w*|essenz)\b/.test(text);
+    const refill=/\bnachfull\w*/.test(text),spray=/\b(?:spray|spruh\w*)/.test(text);
+    let shape=refill?'refill':spray?'spray':/\b(?:flasche|spender|pumpspender)\b/.test(text)?'bottle':'';
+    // These defaults belong only to the researched manufacturer products.
+    const plain=cleanTitle(product).replace(/\b(?:glas|allzweck|essig|neutral) reiniger\b/g,m=>m.replace(' ',''));
+    if(!shape&&norm(product.brand)==='frosch'){
+      if(/^(?:glasreiniger spiritus|spiritus glasreiniger|allzweckreiniger soda|soda allzweckreiniger)$/.test(plain))shape='spray';
+      if(/^(?:essigreiniger|neutralreiniger)$/.test(plain))shape='bottle';
+    }
+    if(kind==='shampoo')shape=/\b(?:fest|festes|shampoo bar)\b/.test(text)?'solid':'liquid';
+    if(kind==='laundry-detergent')shape=/\b(?:pulver|pods|caps|gel|flussig)\b/.exec(text)?.[0]||'unknown';
+    if(kind==='dishwasher-tablets')shape=/\b(?:classic|klassik)\b/.test(text)?'classic':/\b(?:all in|allin|multi)\b/.test(text)?'multi':'unknown';
+    if(kind==='bin-bags')shape='capacity-'+(title.match(/\b(\d+)\s*(?:l|liter)\b/)?.[1]||'unknown');
+    if(kind==='baking-paper'){
+      const dimensions=title.match(/\b(\d+)\s*[x×]\s*(\d+)\s*cm\b/);
+      shape=/\bzuschnitte\b/.test(title)&&dimensions?'sheets-'+[Number(dimensions[1]),Number(dimensions[2])].sort((a,b)=>a-b).join('x'):'unknown';
+    }
+    const layers=Number(product.paperLayers)||Number(title.match(/\b(\d) lagig\b/)?.[1])||null;
+    return {kind,shape:shape||'unspecified',concentrate,layers};
+  }
+  function householdUnitValid(profile,pack){
+    if(!profile||!pack)return true;
+    if(['toilet-paper','kitchen-paper'].includes(profile.kind))return ['Blatt','St.'].includes(pack.unit);
+    if(['diapers','bin-bags','sponges','cleaning-wipes','dishwasher-tablets','baking-paper'].includes(profile.kind))return pack.unit==='St.';
+    if(profile.kind==='dishwasher-salt')return pack.unit==='g';
+    if(profile.kind==='laundry-detergent')return ['Wl','g','ml'].includes(pack.unit);
+    if(profile.kind==='shampoo'&&profile.shape==='solid')return pack.unit==='g';
+    return pack.unit==='ml';
+  }
+  function householdCompatible(a,b){
+    return !!a&&!!b&&a.kind===b.kind&&a.shape===b.shape&&a.concentrate===b.concentrate&&
+      (!(a.layers||b.layers)||a.layers===b.layers);
+  }
+  function householdIdentity(product){
+    return cleanTitle(product).replace(/\b(?:glas|allzweck|essig|neutral) reiniger\b/g,m=>m.replace(' ',''))
+      .replace(/\b(?:spray|spruhflasche|nachfull\w*|flasche)\b/g,' ').split(/\s+/).filter(Boolean).sort().join(' ');
+  }
   // Ordered product families guide budgets only, never shopping substitutions.
   // Exclusions keep ingredients, prepared meals and household goods apart.
   const familyRules=[
@@ -315,6 +374,8 @@
     ["candles","grabkerze|kompositions.ol.licht|st. jakobs grabkerze",null]
   ].map(([name,pattern,exclude])=>[name,new RegExp('\\b(?:'+pattern+')'),exclude?new RegExp(exclude):null]);
   function family(title,category='',brand=''){
+    const household=householdFamily(title);
+    if(household)return 'household-'+household;
     const context=categoryKey(category),maker=norm(brand);
     // ALDI titles usually append flavour/recipe ingredients after a comma.
     // Never classify cheese "…, Kräuter" or liver pâté "…, Trüffel" as herbs/pralines.
@@ -449,10 +510,13 @@
     const ref={id:row.id,label:String(row.label||row.title),brand:String(row.brand||''),category:String(row.category||''),
       line:row.line||null,pack:{...row.pack,unit:canonicalUnit(row.pack.unit)},cents:row.cents,sourceUrl:row.sourceUrl,
       sourceLabel:row.sourceLabel||'Recherchiertes Preisbeispiel',note:typeof row.note==='string'?row.note:'',
-      reviewedAt:row.reviewedAt,reviewDue:row.reviewDue};
+      reviewedAt:row.reviewedAt,reviewDue:row.reviewDue,...(row.productForm?{productForm:row.productForm}:{}),
+      ...(row.concentrated===true?{concentrated:true}:{})};
     const text=cleanTitle(ref),kind=family(ref.label,ref.category,ref.brand);
     if(dryPackFamilies.has(kind)&&ref.pack.unit==='ml')return null;
-    return {ref,text,words:words(primaryTitle(ref)),fullWords:words(text),category:categoryKey(ref.category),family:kind,form:form(norm(ref.label)),mealFormat:mealFormat(ref),diet:diet(row)};
+    const household=householdProfile(ref);
+    if(!householdUnitValid(household,ref.pack))return null;
+    return {ref,text,words:words(primaryTitle(ref)),fullWords:words(text),category:categoryKey(ref.category),family:kind,form:form(norm(ref.label)),mealFormat:mealFormat(ref),diet:diet(row),household};
   }
   function isGroup(product){
     return !!(product.isGroupChoice||product.groupSelection||/^(?:choice:|.*-group-)/.test(product.id||'')||
@@ -489,13 +553,19 @@
     function calculate(product,today){
       if(!product||!validDate(today))return {value:null,reason:'Ungültiges Produkt oder Datum'};
       const productFamily=family(product.title,product.category,product.brand);
-      const titled=namedPack(product.title),explicit=dryPackFamilies.has(productFamily)&&product.pack?.unit==='ml'?null:product.pack;
+      const household=householdProfile(product);
+      // Bag capacity and the wearer's body weight do not describe net contents.
+      let quantityTitle=product.title;
+      if(household?.kind==='bin-bags')quantityTitle=String(quantityTitle).replace(/\b\d+\s*(?:l|liter)\b/gi,'');
+      if(household?.kind==='diapers')quantityTitle=String(quantityTitle).replace(/\b\d+(?:\s*[-–]\s*\d+)?\s*kg\b/gi,'');
+      const titled=namedPack(quantityTitle),explicit=dryPackFamilies.has(productFamily)&&product.pack?.unit==='ml'?null:product.pack;
       if(dryPackFamilies.has(productFamily)&&titled.pack?.unit==='ml')titled.pack=null;
       if(explicit&&!validPack(explicit)||!explicit&&titled.ambiguous)return {value:null,reason:'Packungsgröße nicht eindeutig verwendbar'};
       const given=explicit||titled.pack;
       const pack=given?{...given,unit:canonicalUnit(given.unit)}:null;
       if(pack&&!validPack(pack))return {value:null,reason:'Ungültige Packungseinheit'};
-      const exact=(byId.get(product.id)||[]).filter(row=>row.ref.reviewedAt<=today&&sameIdentity(product,row)&&(!pack||pack.unit===row.ref.pack.unit));
+      if(!householdUnitValid(household,pack))return {value:null,reason:'Keine passende Haushalts-Packungseinheit'};
+      const exact=(byId.get(product.id)||[]).filter(row=>row.ref.reviewedAt<=today&&sameIdentity(product,row)&&(!pack||pack.unit===row.ref.pack.unit)&&(!household||householdCompatible(household,row.household)));
       if(exact.length)return {value:makeBudget(exact.sort((a,b)=>b.ref.reviewedAt.localeCompare(a.ref.reviewedAt)).slice(0,1),'exact',pack,product,today)};
       const manual=manualEstimate(product,1,today);
       if(manual)return {value:manual};
@@ -507,6 +577,7 @@
       const compatible=row=>{
         if(!usable(row)||dietKey!==row.diet)return false;
         if(fam&&fam!==row.family)return false;
+        if((household||row.household)&&!householdCompatible(household,row.household))return false;
         if(fam==='frozen-ready-meal'&&row.mealFormat!==mealFormat(product))return false;
         // A 5-pack is not one sachet. Without a total net weight, only a reference
         // with the same explicit bundle count can provide the pack budget.
@@ -539,9 +610,18 @@
       }
       ranked.sort((a,b)=>b.score-a.score||b.row.ref.reviewedAt.localeCompare(a.row.ref.reviewedAt)||a.row.ref.id.localeCompare(b.row.ref.id));
       if(ranked.length){
+        // A known manufacturer's matching variant and exact pack may have a
+        // different catalogue ID. One explicit identity supplies its budget.
+        const identified=household&&!isGroup(product)&&product.brand&&pack?.min===pack?.max?
+          ranked.find(({row})=>norm(product.brand)===norm(row.ref.brand)&&
+            householdIdentity(product)===householdIdentity(row.ref)&&
+            (!product.line||norm(product.line)===norm(row.ref.line)||row.text.includes(norm(product.line)))&&
+            pack.min===row.ref.pack.min&&pack.max===row.ref.pack.max):null;
+        if(identified)return {value:makeBudget([identified.row],'exact',pack,product,today)};
         const best=ranked[0],rows=ranked.filter(hit=>hit.score>=best.score-2&&hit.row.ref.pack.unit===best.row.ref.pack.unit).slice(0,7).map(hit=>hit.row);
         return {value:makeBudget(rows,'similar',pack,product,today)};
       }
+      if(household)return {value:null,reason:'Keine Preisreferenz für diese Haushaltsart und Verpackungsform'};
       if(fam==='soba'&&shape==='big-cup'&&(!pack||pack.unit==='g')){
         const cups=(byFamily.get('soba')||[]).filter(row=>row.form==='cup'&&row.ref.pack.unit==='g'&&row.ref.reviewedAt<=today&&row.diet===dietKey);
         cups.sort((a,b)=>[...productWords].filter(word=>b.words.has(word)).length-[...productWords].filter(word=>a.words.has(word)).length);
@@ -604,7 +684,9 @@
         `Markenabweichung: Preisbeispiel${selected.length===1?'':'e'} von ${otherBrands.filter(Boolean).join(', ')||'nicht angegebener Marke'} statt ${product.brand}; der Preis der gewählten Marke ist nicht belegt.`:'';
       const discardedVolume=product.pack?.unit==='ml'&&dryPackFamilies.has(family(product.title,product.category,product.brand));
       const preparationNote=discardedVolume?`Die erfassten ${product.pack.min}${product.pack.max!==product.pack.min?'–'+product.pack.max:''} ml bezeichnen die Zubereitung. Das Beutelgewicht ist unbekannt; gerechnet wird mit der angegebenen Referenzpackung.`:'';
-      const assumptionNote=[brandNote,preparationNote].filter(Boolean).join(' ');
+      const householdScaleNote=householdProfile(product)&&given&&size!==middle(anchor.pack)?
+        `Für ${size} ${pack.unit} proportional aus der Referenzpackung mit ${middle(anchor.pack)} ${anchor.pack.unit} geschätzt; ein Preis dieser Packungsgröße ist nicht belegt.`:'';
+      const assumptionNote=[brandNote,preparationNote,householdScaleNote].filter(Boolean).join(' ');
       const explanation=[basis==='exact'?'Gerundetes Budget aus dem datierten Preisbeispiel dieses Produkts.':
         basis==='similar'?`Budget aus ${selected.length} ähnlichen Preisbeispiel${selected.length===1?'':'en'}; kein Preisnachweis für dieses Produkt.`:
         `Grobes Budget aus dem Median von ${selected.length} Preisbeispielen der Kategorie „${product.category}“; Produkt und Sorte können abweichen.`,
@@ -624,7 +706,7 @@
       if(!Number.isInteger(qty)||qty<1||qty>99)return null;
       // Cache the base estimate, not the current catalog replacement: an old saved
       // shopping-list snapshot can carry a different pack or special diet.
-      const key=JSON.stringify([product?.id,product?.title,product?.brand,product?.line,product?.category,product?.pack,product?.dietaryLabels,
+      const key=JSON.stringify([product?.id,product?.title,product?.brand,product?.line,product?.category,product?.pack,product?.dietaryLabels,product?.productForm,product?.paperLayers,product?.concentrated,
         product?.bio,product?.vegan,product?.vegetarian,product?.lactoseFree,product?.glutenFree,product?.isGroupChoice,product?.groupSelection,product?.groupId,product?.variantId,today]);
       if(!cache.has(key)){if(cache.size>=10000)cache.clear();cache.set(key,calculate(product,today));}
       const result=cache.get(key).value;

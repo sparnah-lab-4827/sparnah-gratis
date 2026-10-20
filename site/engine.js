@@ -60,8 +60,8 @@
   function unitPrice(offer) {
     const p = offer.pack;
     if (!p || !p.min) return '';
-    const scale = (p.unit === 'g' || p.unit === 'ml') ? 1000 : 1;
-    const unit = p.unit === 'g' ? 'kg' : p.unit === 'ml' ? 'l' : p.unit;
+    const scale = (p.unit === 'g' || p.unit === 'ml') ? 1000 : p.unit === 'Blatt' ? 100 : 1;
+    const unit = p.unit === 'g' ? 'kg' : p.unit === 'ml' ? 'l' : p.unit === 'Blatt' ? '100 Blatt' : p.unit;
     const a = Math.round(offer.priceCents / p.max * scale), b = Math.round(offer.priceCents / p.min * scale);
     return (a === b ? money(a) : money(a) + '–' + money(b)) + ' / ' + unit;
   }

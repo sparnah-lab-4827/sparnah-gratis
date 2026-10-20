@@ -168,3 +168,22 @@
 @media print{.visit-start-top{display:none}.plan-overview{break-inside:avoid}}
 
 .offer-categories{display:flex;flex-direction:column;gap:24px}.offer-category>.section-head{margin-bottom:12px}.offer-category>.section-head h2{display:flex;align-items:center;gap:8px;font-size:19px}.offer-category .offer-grid{margin-top:0}@media(max-width:680px){.offer-categories{gap:20px}.offer-category>.section-head h2{font-size:17px}}
+
+/* Recognise the package at a glance; the whole trip remains one scrolling list. */
+.shopping-row>.thumb{width:84px;height:96px;background:#fff;border:1px solid #edf0e7;border-radius:12px}
+.shopping-row>.thumb img{padding:3px}
+.shopping-row>.thumb .emoji{font-size:42px}
+.shopping-row>.shopping-check{margin-top:24px}
+.list-row>.thumb{width:58px;height:68px;background:#fff}
+.thumb:not(.loaded) .thumb-label,.thumb.failed .thumb-label{display:none}
+.shopping-row .thumb-label{font-size:9px;line-height:15px}
+@media(max-width:680px){
+ .shopping-row>.thumb{width:72px;height:86px}
+ .shopping-row>.shopping-check{margin-top:19px}
+ .list-row>.thumb{width:54px;height:64px}
+}
+@media(max-width:360px){
+ .shopping-row>.thumb{width:64px;height:78px}
+ .shopping-row>.shopping-check{margin-top:15px}
+ .list-row>.thumb{width:48px;height:58px}
+}

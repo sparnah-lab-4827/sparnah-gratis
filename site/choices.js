@@ -89,6 +89,94 @@
     if (product.groupSelection || product.isGroupChoice || !brand || !title || !packKey(product.pack) || /\b(?:oder|verschiedene|versch)\b|\//.test(title)) return null;
     return {kind: 'same-product', group: `choice:same:${key(brand)}:${key(title)}:${packKey(product.pack)}:${dietaryKey(product)}`, description: `Günstigster erfasster Preis derselben Marke und Produktausführung · ${packLabel(product.pack)}.`};
   }
+  const householdCategory = 'Haushalt & Drogerie';
+  const householdTitle = (product, brands) => {
+    let title = normalize(product.title), brand = brandOf(product, brands);
+    if (brand && title.startsWith(brand + ' ')) title = title.slice(brand.length + 1);
+    // Litres describe bin capacity, not how many bags are inside the package.
+    title = product.pack?.unit === 'St.' ? title.replace(/\b\d+\s*(?:stuck|st\.?)(?=\s|$|[,;])/g, '') : withoutPack(title);
+    return title.replace(/[‐‑–—-]/g, ' ').replace(/\s+/g, ' ').trim();
+  };
+  function paperProfile(product, brands) {
+    if (product.pack.unit !== 'Blatt') return null;
+    const title = householdTitle(product, brands);
+    const type = /\b(?:toilettenpapier|klopapier)\b/.test(title) ? 'toilet-paper' : /\b(?:kuchenpapier|kuchenrollen|kuchentucher)\b/.test(title) ? 'kitchen-paper' : null;
+    if (!type) return null;
+    const text = normalize([product.title, product.subtitle].filter(Boolean).join(' '));
+    const namedLayers = Number(text.match(/\b([2-5])\s*-?\s*lagig\b/)?.[1]);
+    const layers = Number(product.paperLayers || namedLayers);
+    const rollCount = text.match(/\b(\d+)\s*(?:rollen\s*(?:mit|a|à|je)?\s*)?[x×]\s*(\d+)\s*blatt\b/);
+    const statedTotal = text.match(/\b(?:insgesamt|gesamt)\s*(\d+)\s*blatt\b/) || text.match(/\b(\d+)\s*blatt\s*(?:insgesamt|gesamt)\b/);
+    const total = Number(product.paperTotalSheets || (rollCount ? Number(rollCount[1]) * Number(rollCount[2]) : statedTotal?.[1]));
+    // A bare "150 Blatt" usually describes a roll. It is not a verified pack total.
+    if (![2,3,4,5].includes(layers) || !Number.isSafeInteger(total) || total !== product.pack.min) return null;
+    if (namedLayers && namedLayers !== layers || rollCount && Number(rollCount[1])*Number(rollCount[2]) !== total || statedTotal && Number(statedTotal[1]) !== total) return null;
+    const remainder = title.replace(/\b(?:toilettenpapier|klopapier|kuchenpapier|kuchenrollen|kuchentucher)\b/g, '')
+      .replace(/\b[2-5]\s*lagig\b/g, '').replace(/\b\d+\s*(?:rollen\s*(?:mit|a|à|je)?\s*)?[x×]\s*\d+\s*blatt\b/g, '')
+      .replace(/\b(?:insgesamt|gesamt)\s*\d+\s*blatt\b|\b\d+\s*blatt\s*(?:insgesamt|gesamt)\b/g, '')
+      .replace(/\b(?:xxl|classic|klassik|recycling)\b/g, '').replace(/\s+/g, '');
+    if (remainder) return null;
+    const recycling = /\brecycling\b/.test(title) || product.recycled === true ? 'recycled' : 'unspecified';
+    return {kind:'household',group:`choice:household:${type}:${layers}-ply:${recycling}:${packKey(product.pack)}`,
+      description:`Marke egal · ${layers}-lagig · insgesamt ${packLabel(product.pack)}. Verglichen werden nur Packungen mit bestätigter Gesamtblattzahl und gleicher Lagenzahl.`};
+  }
+  function householdProfile(product, brands) {
+    const paper = paperProfile(product, brands);
+    if (paper) return paper;
+    const title = householdTitle(product, brands), unit = product.pack.unit;
+    const rules = [
+      ['ml', /^(?:glasreiniger|glas reiniger) (?:spray|spruhflasche)$/, ()=>'glass-cleaner:spray'],
+      ['ml', /^(?:glasreiniger|glas reiniger) (?:nachfullpack|nachfullpackung|nachfullbeutel)$/, ()=>'glass-cleaner:refill'],
+      ['ml', /^(?:allzweckreiniger|allzweck reiniger) (?:spray|spruhflasche)$/, ()=>'all-purpose-cleaner:spray'],
+      ['ml', /^(?:handspulmittel|geschirrspulmittel|spulmittel)(?: flussig)?$/, ()=>'hand-dishwashing-liquid:ordinary'],
+      ['ml', /^(?:flussigseife|handseife flussig) (?:nachfullpack|nachfullpackung|nachfullbeutel)$/, ()=>'liquid-hand-soap:refill'],
+      ['St.', /^mullbeutel (\d+)\s*(?:l|liter)$/, m=>'bin-bags:'+m[1]+'-litre'],
+      ['St.', /^backpapier zuschnitte (\d+)\s*[x×]\s*(\d+)\s*cm$/, m=>'baking-paper:sheets:'+m[1]+'x'+m[2]+'cm'],
+      ['St.', /^spulschwamme$/, ()=>'dishwashing-sponges:ordinary'],
+      ['St.', /^(?:spulmaschinentabs|geschirrspultabs) (?:classic|klassik)$/, ()=>'dishwasher-tabs:classic'],
+      ['g', /^(?:spulmaschinensalz|geschirrspulsalz)$/, ()=>'dishwasher-salt']
+    ];
+    for (const [required,pattern,family] of rules) {
+      if (unit !== required) continue;
+      const match = title.match(pattern);
+      if (match) return {kind:'household',group:`choice:household:${family(match)}:${packKey(product.pack)}`,
+        description:`Marke egal · ${packLabel(product.pack)}. Nur dieselbe Produktart und Verpackungsform mit gleicher Packungsgröße werden verglichen; Konzentrate und andere Ausführungen bleiben getrennt.`};
+    }
+    return null;
+  }
+  const manufacturerDefinitions = [
+    ['glass-spiritus-spray','Glas-Reiniger Spiritus',500,'Sprühflasche','glas-reiniger-spiritus','frosch-de_frosch_spiritus_glas-reiniger_500mll_565y642py_productdashboardmq1.png',['Spiritus Glas-Reiniger','Glasreiniger Spiritus']],
+    ['glass-spiritus-refill','Glas-Reiniger Spiritus Nachfüllbeutel',950,'Nachfüllbeutel','glas-reiniger-spiritus-nachfuellbeutel','frosch-de_frosch-spiritus-glas-reiniger-nfb-950ml_565y642py_productdashboardmq1.png',['Spiritus Glas-Reiniger Nachfüllbeutel','Glasreiniger Spiritus Nachfüllbeutel']],
+    ['all-purpose-soda-spray','Allzweck-Reiniger Soda',500,'Spray','allzweck-reiniger-soda','frosch-de_frosch_soda_allzweck-reiniger_500ml_565y642py_productdashboardmq1.png',['Soda Allzweck-Reiniger','Allzweckreiniger Soda']],
+    ['vinegar-cleaner','Essig Reiniger',1000,'Flasche','essig-reiniger','frosch-de_frosch_essig-reiniger_1l_565y642py_productdashboardmq1-2.png',['Essigreiniger']],
+    ['neutral-cleaner','Neutral Reiniger',1000,'Flasche','neutral-reiniger','frosch_all_purpose_cleaner_neutral_1000ml_d_productdashboardmq1.png',['Neutralreiniger']]
+  ];
+  function manufacturerDefinition(product, brands) {
+    if (brandOf(product, brands) !== 'frosch' || product.pack.unit !== 'ml') return null;
+    const statedSizes=[...normalize(product.title).matchAll(/\b(\d+(?:[.,]\d+)?)\s*(ml|l)\b/g)];
+    if (statedSizes.some(m=>Number(m[1].replace(',','.'))*(m[2]==='l'?1000:1)!==product.pack.min)) return null;
+    const title = householdTitle(product, brands);
+    return manufacturerDefinitions.find(([,name,amount,form,,,aliases]) =>
+      product.pack.min === amount && (!product.productForm || normalize(product.productForm) === normalize(form)) &&
+      (!product.line || normalize(name).includes(normalize(product.line))) &&
+      [name,...aliases].some(alias => householdTitle({title:alias,brand:''},[]) === title)) || null;
+  }
+  function manufacturerProfile(product, brands) {
+    const definition = manufacturerDefinition(product, brands);
+    return definition ? {kind:'same-product',group:'choice:manufacturer:frosch:'+definition[0],
+      description:`Günstigster erfasster Preis derselben Frosch-Ausführung · ${definition[3]} · ${packLabel(product.pack)}. Andere Reiniger und Nachfüllformate bleiben getrennt.`} : null;
+  }
+  function referenceProducts() {
+    return manufacturerDefinitions.map(([id,title,size,form,slug,image,aliases]) => {
+      const productId='manufacturer:frosch:'+id;
+      return {id:productId,title:'Frosch '+title,brand:'Frosch',variantId:productId,
+        groupId:'choice:manufacturer:frosch:'+id,pack:{min:size,max:size,unit:'ml'},category:householdCategory,
+        productForm:form,referenceWish:true,emoji:'🧽',aliases:aliases.map(alias=>'Frosch '+alias),subtitle:`${form} · ${packLabel({min:size,unit:'ml'})}`,
+        manufacturerSourceUrl:`https://frosch.de/de/produkte-und-tipps/${slug}.html`,manufacturerCheckedAt:'2026-10-20',
+        image:`https://frosch.de/produktdatenbank/produktbilder/${image}`,imagePack:{min:size,max:size,unit:'ml'},
+        selectionHint:'Herstellerreferenz; Angebotspreis und Verfügbarkeit beim ausgewählten Händler sind noch offen.'};
+    });
+  }
   function juiceProfile(title, product) {
     if (product.pack.unit !== 'ml') return null;
     const plain = title.replace(/^bio /, '');
@@ -165,6 +253,10 @@
   }
   function profiles(product, brands) {
     if (!product || product.packUnconfirmed || !packKey(product.pack)) return [];
+    const manufacturer = manufacturerProfile(product, brands);
+    if (manufacturer) return [manufacturer];
+    const household = householdProfile(product, brands);
+    if (household) return [household];
     const butter = butterProfile(product, brands);
     if (butter) return [butter];
     const milk = milkProfiles(product, brands);
@@ -250,6 +342,30 @@
       return [{...p,groupId:profile.group}];
     });
   }
+  function householdWishes(products = []) {
+    const brands=knownBrands(products);
+    const definitions=[
+      ['toilet-paper-3ply','Toilettenpapier 3-lagig',1200,'Blatt','🧻',{paperLayers:3,paperTotalSheets:1200,aliases:['Klopapier','Toilettenpapier Marke egal']}],
+      ['kitchen-paper-3ply','Küchenpapier 3-lagig',256,'Blatt','🧻',{paperLayers:3,paperTotalSheets:256,aliases:['Küchenrolle','Küchenrollen','Küchentücher']}],
+      ['glass-cleaner-spray','Glasreiniger Spray',500,'ml','🧽'],
+      ['glass-cleaner-refill','Glasreiniger Nachfüllpack',1000,'ml','🧽'],
+      ['all-purpose-cleaner-spray','Allzweckreiniger Spray',500,'ml','🧽'],
+      ['dishwashing-liquid','Handspülmittel',500,'ml','🧽',{aliases:['Spülmittel','Geschirrspülmittel']}],
+      ['liquid-soap-refill','Flüssigseife Nachfüllpack',500,'ml','🧼'],
+      ['bin-bags-30l','Müllbeutel 30 Liter',20,'St.','🗑️',{aliases:['Müllsäcke 30 Liter']}],
+      ['baking-paper-sheets','Backpapier Zuschnitte 38 × 42 cm',20,'St.','🧻'],
+      ['dishwashing-sponges','Spülschwämme',3,'St.','🧽'],
+      ['dishwasher-tabs-classic','Spülmaschinentabs Classic',40,'St.','🫧'],
+      ['dishwasher-salt','Spülmaschinensalz',2000,'g','🫧']
+    ];
+    const existing=new Set(products.filter(p=>p&&!p.brand&&!p.variantId&&packKey(p.pack)).map(p=>`${p.groupId}|${packKey(p.pack)}`));
+    return definitions.flatMap(([id,title,size,unit,emoji,extra={}])=>{
+      const p={id:'basic:household-'+id,title,brand:'',variantId:null,isGroupChoice:true,
+        pack:{min:size,max:size,unit},category:householdCategory,emoji,...extra,subtitle:`Marke egal · ${packLabel({min:size,unit})}`};
+      const profile=profiles(p,brands)[0];
+      return !profile||existing.has(`${profile.group}|${packKey(p.pack)}`)?[]:[{...p,groupId:profile.group}];
+    });
+  }
   function basicGroups(product, products, brands) {
     // Broad list wishes name a food, not a particular brand or cultivar.
     // Keep those wishes separate from exact catalogue products and all opt-in substitutions.
@@ -303,10 +419,15 @@
       const linked = byId.get(offer.productId);
       // The offer's actual title and pack take precedence over its catalogue link.
       const candidate = {...linked, ...offer, title: offer.title || (linked && linked.title), brand: offer.brand || (linked && linked.brand), groupId: linked && linked.groupId};
+      // Paper metadata must be present on this offer, not inherited from a linked
+      // catalogue variant whose ply or roll count the offer never confirmed.
+      for (const field of ['paperLayers','paperTotalSheets','subtitle']) if (!Object.hasOwn(offer,field)) delete candidate[field];
       const additions = basicGroups(candidate, basics, brands).concat(profileGroups(candidate, brands));
       if (!additions.length) return offer;
-      return {...offer, groupIds: [...new Set([...(offer.groupIds || []), ...additions])]};
+      const manufacturer = manufacturerDefinition(candidate, brands);
+      return {...offer, groupIds: [...new Set([...(offer.groupIds || []), ...additions])],
+        ...(manufacturer?{variantIds:[...new Set([...(offer.variantIds||[]),'manufacturer:frosch:'+manufacturer[0]])]}:{})};
     });
   }
-  return { getChoice, createResolver, annotateOffers, basicWishes };
+  return { getChoice, createResolver, annotateOffers, basicWishes, householdWishes, referenceProducts };
 });

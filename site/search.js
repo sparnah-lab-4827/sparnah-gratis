@@ -25,7 +25,7 @@
     const matches=(text,words)=>terms.every(t=>/^\d+$/.test(t)?words.has(t):text.includes(t));
     // A global wish is a shopping intention, not evidence of a retailer's stock.
     // Keep it available with a source filter; actual catalogue entries stay scoped.
-    for(const row of index.rows)if((store==='all'||row.p.assortmentStoreId===store||row.generic&&!row.p.assortmentStoreId)&&(category==='all'||row.p.category===category)&&matches(row.text,row.words)){
+    for(const row of index.rows)if((store==='all'||row.p.assortmentStoreId===store||(row.generic||row.p.referenceWish===true)&&!row.p.assortmentStoreId)&&(category==='all'||row.p.category===category)&&matches(row.text,row.words)){
       const direct=matches(row.primary,row.primaryWords);
       const titleHits=terms.reduce((score,t)=>score+Math.max(0,...[...row.titleWords].map(w=>w===t?4:w.startsWith(t)?3:w.endsWith(t)?2:w.includes(t)?1:0)),0);
       const exactPack=!!(row.p.pack&&row.p.pack.min===row.p.pack.max&&terms.includes(String(row.p.pack.min)));

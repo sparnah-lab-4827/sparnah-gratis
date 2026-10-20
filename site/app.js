@@ -98,11 +98,11 @@
     memoKey='';
     const settings=S.reconcileStores(model.base.settings,C.stores);
     if(JSON.stringify(settings)!==JSON.stringify(model.base.settings)){model.base.settings=settings;persist();}
-    const existingProducts=C.products.concat(assortment.products,model.base.items.filter(i=>!i.deleted).map(i=>i.product));
-    searchIndex=S.build(existingProducts,Choices.basicWishes(existingProducts));
+    const existingProducts=C.products.concat(assortment.products,Choices.referenceProducts(),model.base.items.filter(i=>!i.deleted).map(i=>i.product));
+    searchIndex=S.build(existingProducts,Choices.basicWishes(existingProducts),Choices.householdWishes(existingProducts));
     // Keep stable wish IDs restorable even when an equivalent catalogue wish
     // replaces their search suggestion. Saved choices retain their own snapshot.
-    for(const wish of Choices.basicWishes())if(!searchIndex.byId.has(wish.id))searchIndex.byId.set(wish.id,wish);
+    for(const wish of [...Choices.basicWishes(),...Choices.householdWishes()])if(!searchIndex.byId.has(wish.id))searchIndex.byId.set(wish.id,wish);
     priceGuide=window.SparnahEstimates?.createEstimator(searchIndex.products);
     resolveChoice=Choices.createResolver(searchIndex.products);
     selectedProductCache=new WeakMap();searchMemo=null;
@@ -138,8 +138,9 @@
     const current=searchIndex?.byId.get(p?.id);
     const visual=resolved?p:S.visualProduct(p,current);
     const image = model.photos !== false && safeUrl(visual?.image);
-    const label = p?.variantId ? 'Produktbild' : 'Beispielbild';
-    return `<span class="thumb ${extra}" role="img" aria-label="${esc('Symbolbild: ' + (p?.title || 'Produkt'))}" data-image-label="${esc(visual?.imageAlt || label + ': ' + (p?.title || 'Produkt'))}" data-caption="${esc(label)}"><span class="emoji" aria-hidden="true">${esc(p?.emoji || '🛒')}</span>${image ? `<img src="${esc(image)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ''}</span>`;
+    const example=!!(visual?.imageRepresentative||visual?.imageKind==='group-representative'||!p?.variantId);
+    const label = example ? 'Beispielbild' : 'Produktbild';
+    return `<span class="thumb ${extra}" role="img" aria-label="${esc('Symbolbild: ' + (p?.title || 'Produkt'))}" data-image-label="${esc(visual?.imageAlt || label + ': ' + (p?.title || 'Produkt'))}" data-caption="${esc(label)}"><span class="emoji" aria-hidden="true">${esc(p?.emoji || '🛒')}</span>${image ? `<img src="${esc(image)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">${example?'<small class="thumb-label">Beispielbild</small>':''}` : ''}</span>`;
   }
   function badge(s,standalone=false) {
     const logo=window.SparnahLogos?.source(s);
@@ -315,8 +316,8 @@
   }
   function estimateMarkup(item) {
     const e=estimated(item);if(!e)return '';
-    const unit=e.pack.unit==='g'?'kg':e.pack.unit==='ml'?'l':e.pack.unit;
-    const base=['g','ml'].includes(e.pack.unit)?1000:1;
+    const unit=e.pack.unit==='g'?'kg':e.pack.unit==='ml'?'l':e.pack.unit==='Blatt'?'100 Blatt':e.pack.unit;
+    const base=['g','ml'].includes(e.pack.unit)?1000:e.pack.unit==='Blatt'?100:1;
     const unitText=e.assumedRange?'':` · ca. ${E.money(Math.round(e.cents*base/e.pack.min))}/${esc(unit)}`;
     return `<div class="estimated-price"><strong>Geschätzt: ca. ${E.money(e.total)}${e.stale?' · Richtwert veraltet':''}</strong>${e.basis==='category'?'<p class="tiny"><strong>Grobe Schätzung aus ähnlichen Preisbeispielen.</strong></p>':e.basis==='similar'?'<p class="tiny">Aus einem ähnlichen Produkt geschätzt.</p>':''}<p class="tiny">${item.qty} × ca. ${E.money(e.cents)} · ${e.assumedPack||e.assumedRange?'Angenommene Packung: ':''}${esc(E.packLabel(e.pack))}${e.scaled?' · nach Packungsgröße umgerechnet':''}${unitText}</p>${e.assumptionNote?`<p class="tiny"><strong>${esc(e.assumptionNote)}</strong></p>`:''}<p class="tiny">Richtwert, kein bestätigter Preis deines Ladens. Ohne Pfand.</p><details><summary class="tiny">Grundlage und Prüfdatum</summary><p class="tiny">${esc(e.explanation||'Passendes Preisbeispiel als Budgethilfe.')} Preisbeispiel: ${esc(e.label)} · ${E.money(e.referenceCents)} für ${esc(E.packLabel(e.referencePack))}. Quelle geprüft am ${e.reviewedAt.split('-').reverse().join('.')}. ${e.stale?'Überprüfung fällig – Richtwert veraltet.':'Nächste Prüfung vorgesehen: '+e.reviewDue.split('-').reverse().join('.')+'.'} Kein Markt-Durchschnitt; regionale Preise können abweichen.</p><a class="tiny" href="${esc(safeUrl(e.sourceUrl))}" target="_blank" rel="noopener noreferrer">${esc(e.sourceLabel||'Preisgrundlage')} ↗</a>${e.packSourceUrl?` · <a class="tiny" href="${esc(safeUrl(e.packSourceUrl))}" target="_blank" rel="noopener noreferrer">Packungsgrößen-Beispiel ↗</a>`:''}</details></div>`;
   }
@@ -401,7 +402,7 @@
     const usable=stillListed&&E.validOn(line.offer,E.berlinToday())&&E.offerUsable(line.offer,entry.qty);
     const original=model.base.items.find(i=>i.id===entry.itemId)?.product;
     const price=usable?`<p class="shopping-price">${E.money(line.offer.priceCents*entry.qty)} <span class="tiny">${priceKind(line.offer)} · ${esc(E.unitPrice(line.offer))}${line.offer.depositCents?` · + ${E.money(line.offer.depositCents*entry.qty)} Pfand`:''}</span></p>`:shoppingEstimate(entry);
-    return `<article class="shopping-row ${entry.checked?'checked':''}" data-shopping-item="${esc(entry.itemId)}"><button class="shopping-check ${entry.checked?'done':''}" data-action="check" data-id="${esc(entry.itemId)}" role="checkbox" aria-checked="${entry.checked}" aria-label="${esc(entry.product.title)} als ${entry.checked?'offen':'eingekauft'} markieren">${entry.checked?icon('check'):''}</button>${thumb(entry.product,'',true)}<div class="grow"><h3>${entry.qty} × ${esc(entry.product.title)}</h3>${original?.title!==entry.product.title?`<p class="tiny muted">Für: ${esc(original?.title)}</p>`:''}<p class="small muted">${esc(E.packLabel(line?.offer?.pack||entry.product.pack))}</p>${entry.checked?'<p class="shopping-done">Im Einkaufswagen</p>':price}${!usable&&line?'<p class="tiny muted">Der Planpreis ist heute nicht bestätigt.</p>':''}</div></article>`;
+    return `<article class="shopping-row ${entry.checked?'checked':''}" data-shopping-item="${esc(entry.itemId)}"><button class="shopping-check ${entry.checked?'done':''}" data-action="check" data-id="${esc(entry.itemId)}" role="checkbox" aria-checked="${entry.checked}" aria-label="${esc(entry.product.title)} als ${entry.checked?'offen':'eingekauft'} markieren">${entry.checked?icon('check'):''}</button>${thumb(entry.product,'',!!line)}<div class="grow"><h3>${entry.qty} × ${esc(entry.product.title)}</h3>${original?.title!==entry.product.title?`<p class="tiny muted">Für: ${esc(original?.title)}</p>`:''}<p class="small muted">${esc(E.packLabel(line?.offer?.pack||entry.product.pack))}</p>${entry.checked?'<p class="shopping-done">Im Einkaufswagen</p>':price}${!usable&&line?'<p class="tiny muted">Der Planpreis ist heute nicht bestätigt.</p>':''}</div></article>`;
   }
   function shoppingPage() {
     const session=shoppingSession();
