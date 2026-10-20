@@ -115,7 +115,7 @@
 @media(max-width:700px){
  .shopping-hero{padding:22px 18px;border-radius:20px}.shopping-hero h1{font-size:23px}.shopping-hero .eyebrow{font-size:9px}.shopping-hero>p{font-size:12px}.shopping-toolbar .secondary{font-size:11px;padding:10px}
  .market-route{padding:17px 14px}.market-stops{display:flex;overflow-x:auto;gap:8px;scroll-snap-type:x proximity;padding-bottom:8px}.market-stop{flex:0 0 112px;scroll-snap-align:start;padding:12px 9px 10px;min-height:109px}.market-stop strong{font-size:11px}.market-stop small{font-size:9px}.stop-number{right:7px;top:6px}
- .shopping-department>header{padding:14px}.shopping-department h2{font-size:16px}.shopping-row{gap:10px;padding:16px 12px}.shopping-row>.thumb{display:none}.shopping-row h3{font-size:14px}
+ .shopping-department>header{padding:14px}.shopping-department h2{font-size:16px}.shopping-row{gap:10px;padding:16px 12px}.shopping-row>.thumb{display:grid;width:40px;height:46px}.shopping-row h3{font-size:14px}
  .market-editor-row{gap:10px;padding:14px 10px}.market-editor-row>.department-number{display:none}.market-editor-row input{font-size:16px}.area-appearance{flex-wrap:wrap;gap:8px}.area-appearance select{max-width:135px}.market-add-area{align-items:stretch;flex-direction:column}
  .market-product-assignment{grid-template-columns:1fr;gap:6px}.market-product-assignment select{font-size:16px}
 }
@@ -128,3 +128,43 @@
  .bottom-nav .nav-label{white-space:nowrap}
  .offer-card .store-badge.retailer-logo{width:34px;height:25px}
 }
+
+/* Compact totals and quick entry into each planned store visit. */
+.compact-plan-heading{margin-bottom:14px;align-items:center}
+.compact-plan-heading h1{font-size:27px}
+.compact-plan-heading p{margin-top:4px}
+.plan-overview{background:#175f4d;color:#f5faef;border-radius:18px;padding:17px 20px;margin-bottom:14px}
+.overview-main{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.plan-overview h2{font-size:13px;font-weight:650;color:inherit}
+.overview-amount{font-size:30px;line-height:1.2;letter-spacing:-.7px}
+.overview-amount.is-estimated{color:#e5ed9d}
+.overview-breakdown{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:9px;font-size:12px;color:#e3eee6}
+.estimate-part{color:#e5ed9d;font-weight:650}
+.overview-status{font-size:11px;line-height:1.6;color:#d4e4db;margin-top:7px}
+.overview-details{font-size:11px;line-height:1.6;margin-top:8px;border-top:1px solid #ffffff25;padding-top:7px}
+.overview-details summary{cursor:pointer;color:#e6efce}
+.overview-details p{margin-top:6px}
+.plan-overview+.week-switch{margin:12px 0 15px}
+.visit-start-top{padding:10px 20px;background:#fafbf7;border-bottom:1px solid var(--line)}
+.visit-start-top .primary{min-height:44px}
+.shopping-row .shopping-estimate{display:inline-block;font-size:12px;font-weight:650;line-height:1.5;color:#735419;background:#fff3cf;border-radius:6px;padding:3px 7px;margin-top:5px}
+.shopping-row{padding-top:13px;padding-bottom:13px}
+.shopping-row>.thumb{flex-shrink:0}
+.shopping-row .grow{min-width:0}
+.shopping-row h3{line-height:1.35}
+.shopping-price{margin-top:5px}
+@media(max-width:680px){
+ .compact-plan-heading h1{font-size:23px}
+ .plan-overview{padding:14px 15px;border-radius:15px}
+ .overview-amount{font-size:27px}
+ .overview-breakdown{font-size:11px}
+ .visit-start-top{padding:9px 13px}
+ .visit-start-top .primary{width:100%;justify-content:center}
+ .shopping-row{gap:8px;padding:12px 10px}
+ .shopping-department>header{padding:10px 12px}
+ .shopping-hero{padding:18px 16px;margin-bottom:16px}
+ .shopping-hero>p{margin:10px 0}
+}
+@media print{.visit-start-top{display:none}.plan-overview{break-inside:avoid}}
+
+.offer-categories{display:flex;flex-direction:column;gap:24px}.offer-category>.section-head{margin-bottom:12px}.offer-category>.section-head h2{display:flex;align-items:center;gap:8px;font-size:19px}.offer-category .offer-grid{margin-top:0}@media(max-width:680px){.offer-categories{gap:20px}.offer-category>.section-head h2{font-size:17px}}

@@ -1,13 +1,14 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),{webcrypto}=require('node:crypto');
 const E=require('../site/engine.js');
-function openApp({referencePriceCents=null,originalPrice=399,today="2026-10-19",missingProduct=null,savedModel=null}={}){
+function openApp({referencePriceCents=null,originalPrice=399,today="2026-10-19",missingProduct=null,savedModel=null,configureFixture=()=>{}}={}){
  const product={id:'original',groupId:'original',variantId:'original450',title:'Nutella',brand:'Ferrero',pack:{min:450,max:450,unit:'g'}};
  const alternative={id:'own',groupId:'own',variantId:'own400',title:'House Nuss-Nougat-Creme',brand:'House',pack:{min:400,max:400,unit:'g'}};
  const missing=missingProduct||{id:'missing',title:'Unpriced food',groupId:'missing'};
  const price=(p,cents)=>({id:p.id,productId:p.id,title:p.title,brand:p.brand,groupIds:[p.groupId],variantIds:[p.variantId],pack:p.pack,priceCents:cents,priceKind:'regular',storeId:'shop',start:today,end:today,verification:'source',sourceUrl:'https://example.com/price/'+p.id});
  const data={catalog:{stores:[{id:'shop',name:'Example shop',retailerId:'rewe'},{id:'other',name:'Other shop',retailerId:'kaufland'}],products:[product,alternative,missing],offers:[...(originalPrice!==null?[price(product,originalPrice)]:[]),{...price(alternative,199),referencePriceCents}],observedAt:'2026-10-19'},assortment:{products:[],sources:{}},status:{stores:{}},leaflets:{leaflets:[]}};
  const model={base:{items:[product,missing].map(p=>({id:p.id,product:p,qty:1})),offers:[],settings:{maxStores:1,enabledStores:['shop'],knownStoreIds:['shop','other']}},photos:false};
+ configureFixture(data,model);
  let shared='',planCalls=0,refreshData;
  const storage=new Map([['sparnah-v1',savedModel||JSON.stringify(model)]]),elements=new Map(),handlers={};
  function el(id){if(!elements.has(id))elements.set(id,{id,innerHTML:'',textContent:'',classList:{add(){},remove(){},toggle(){}},addEventListener(){},setAttribute(){},removeAttribute(){},focus(){}});return elements.get(id);}
@@ -145,7 +146,8 @@ test('shopping visit includes unpriced items and selected alternatives, and chec
  const day=app.html().match(/data-action="start-shopping" data-store="shop" data-day="([^"]+)"/)[1];
  await app.click('start-shopping',{store:'shop',day});
  assert.match(app.html(),/Einkaufen bei REWE/);assert.match(app.html(),/House Nuss-Nougat-Creme/);
- assert.match(app.html(),/Geschätzt: ca. 1,20/);assert.match(app.html(),/0 von 2 im Wagen/);
+ assert.match(app.html(),/Geschätzt ca. 1,20/);assert.match(app.html(),/0 von 2 im Wagen/);
+ assert.doesNotMatch(app.html(),/Datierter Richtwert|Angenommene Packung:|Grundlage und Prüfdatum/);
  assert.match(app.html(),/Vollständige Einkaufsliste in Marktreihenfolge/);
  assert.doesNotMatch(app.html(),/<select|<details|data-action="edit-market"|data-action="jump-area"/);
  assert.equal((app.html().match(/data-shopping-item=/g)||[]).length,2);
@@ -157,9 +159,13 @@ test('shopping visit includes unpriced items and selected alternatives, and chec
  const saved=app.storage.get('sparnah-v1'),reloaded=openApp({...opts,savedModel:saved});
  assert.match(reloaded.html(),/Einkauf fortsetzen/);await reloaded.click('tab',{tab:'shopping'});
  assert.match(reloaded.html(),/2 von 2 im Wagen/);assert.match(reloaded.html(),/House Nuss-Nougat-Creme/);
- await reloaded.click('finish-shopping');
+ const beforeFinish=reloaded.planCalls();await reloaded.click('finish-shopping');
+ assert.equal(reloaded.planCalls(),beforeFinish+1);
  const final=JSON.parse(reloaded.storage.get('sparnah-v1'));
- assert.equal(final.shoppingSession,undefined);assert.ok(final.base.items.every(i=>i.checked));
+ assert.equal(final.shoppingSession,undefined);assert.ok(final.base.items.every(i=>i.deleted));
+ assert.doesNotMatch(reloaded.html(),/class="list-row/);
+ const afterFinish=openApp({...opts,savedModel:reloaded.storage.get('sparnah-v1')});
+ assert.doesNotMatch(afterFinish.html(),/class="list-row|Einkauf fortsetzen/);
  assert.deepEqual(final.base.items[0].product,app.product);assert.deepEqual(final.base.settings.enabledStores,['shop']);
 });
 
@@ -202,4 +208,126 @@ test('shopping snapshot never presents an expired price as current and market la
  const layouts=JSON.parse(app.storage.get('sparnah-v1')).base.settings.shoppingLayouts;
  assert.equal(layouts.rewe.areas[0].id,'dairy');assert.equal(layouts.kaufland.areas[0].id,'meat');
  assert.doesNotMatch(app.html(),/Google Maps|Filialadresse/);
+});
+
+test('one compact overview combines confirmed prices and partial estimates without inventing a full budget',async()=>{
+ const app=openApp({today:'2026-10-20',missingProduct:{id:'missing',title:'Butter'},configureFixture(data,model){
+  const unknown={id:'unclassified',title:'Unclassified fixture object',groupId:'unclassified'};
+  data.catalog.products.push(unknown);model.base.items.push({id:unknown.id,product:unknown,qty:1});
+ }});
+ await app.click('tab',{tab:'plan'});
+ const html=app.html(),overview=html.slice(html.indexOf('class="plan-overview"'),html.indexOf('<article class="plan-visit"'));
+ assert.equal((html.match(/class="plan-overview"/g)||[]).length,1);
+ assert.match(overview,/Bekannte Zwischensumme/);assert.match(overview,/3,99/);
+ assert.match(overview,/Geschätzte Teilsumme/);assert.match(overview,/ca. 5,19/);
+ assert.match(overview,/1 Position(?:\(en\))?[^<]*ohne Richtwert/);
+ assert.doesNotMatch(html,/<section class="estimated-budget"/);
+ assert.doesNotMatch(overview,/Alle Positionen sind für das Budget berücksichtigt/);
+});
+
+test('an unpriced-only visit shows an open price, no zero budget, and start buttons above and below products',async()=>{
+ const app=openApp({today:'2026-10-20',configureFixture(data,model){
+  data.catalog.offers=[];
+  model.base.items=model.base.items.filter(i=>i.id==='missing');
+  model.base.settings.targetStoreId='shop';
+ }});
+ await app.click('tab',{tab:'plan'});
+ const html=app.html(),overview=html.slice(html.indexOf('class="plan-overview"'),html.indexOf('<article class="plan-visit"'));
+ assert.match(overview,/Preis offen/);
+ assert.doesNotMatch(overview,/0,00|Geschätztes Einkaufsbudget[^]*?ca\./);
+ const visit=html.match(/<article class="plan-visit">([\s\S]*?)<\/article>/)[1];
+ const startTags=visit.match(/<button[^>]*data-action="start-shopping"[^>]*>/g)||[];
+ assert.equal(startTags.length,2);
+ assert.match(visit,/<div class="visit-start-top"><button[^>]*data-action="start-shopping"/);
+ const day=startTags[0].match(/data-day="([^"]+)"/)[1];
+ assert.ok(visit.indexOf('visit-start-top')<visit.indexOf('unpriced-line'));
+ for(const tag of startTags){assert.match(tag,/data-store="shop"/);assert.ok(tag.includes('data-day="'+day+'"'));}
+ await app.click('start-shopping',{store:'shop',day});
+ assert.match(app.html(),/0 von 1 im Wagen/);assert.match(app.html(),/data-shopping-item="missing"/);
+});
+
+test('two visits each start their own shop and day from the matching top and bottom buttons',async()=>{
+ const app=openApp({today:'2026-10-20',configureFixture(data,model){
+  const p=data.catalog.products.find(p=>p.id==='missing');
+  p.variantId='missing-exact';p.pack={min:500,max:500,unit:'g'};
+  data.catalog.offers.push({id:'other-price',productId:p.id,title:p.title,groupIds:[p.groupId],
+   variantIds:[p.variantId],pack:p.pack,priceCents:250,priceKind:'regular',storeId:'other',
+   start:'2026-10-21',end:'2026-10-21',verification:'source',sourceUrl:'https://example.com/other'});
+  model.base.settings={...model.base.settings,maxStores:2,allowSplitDays:true,enabledStores:['shop','other']};
+ }});
+ await app.click('tab',{tab:'plan'});
+ const visits=[...app.html().matchAll(/<article class="plan-visit">([\s\S]*?)<\/article>/g)];
+ assert.equal(visits.length,2);
+ const targets=visits.map(([,visit])=>{
+  const buttons=visit.match(/<button[^>]*data-action="start-shopping"[^>]*>/g)||[];
+  assert.equal(buttons.length,2);assert.match(visit,/<div class="visit-start-top"><button[^>]*data-action="start-shopping"/);
+  assert.ok(visit.indexOf('visit-start-top')<visit.indexOf('class="visit-line"'));
+  const store=buttons[0].match(/data-store="([^"]+)"/)[1],day=buttons[0].match(/data-day="([^"]+)"/)[1];
+  assert.ok(buttons[1].includes('data-store="'+store+'"'));assert.ok(buttons[1].includes('data-day="'+day+'"'));
+  assert.match(visit.slice(0,visit.indexOf('class="visit-line"')),store==='shop'?/REWE/:/Kaufland/);
+  return {store,day};
+ });
+ assert.deepEqual(targets,[{store:'shop',day:'2026-10-20'},{store:'other',day:'2026-10-21'}]);
+ for(const target of targets){
+  await app.click('start-shopping',target);
+  const session=JSON.parse(app.storage.get('sparnah-v1')).shoppingSession;
+  assert.equal(session.storeId,target.store);assert.equal(session.day,target.day);
+  assert.deepEqual(session.entries.map(e=>e.itemId),[target.store==='shop'?'original':'missing']);
+  assert.equal((app.html().match(/data-shopping-item=/g)||[]).length,1);
+  await app.click('tab',{tab:'plan'});
+ }
+ // Finishing the second visit must leave the first shop's pending product intact.
+ await app.click('start-shopping',targets[1]);await app.click('check',{id:'missing'});
+ await app.click('finish-shopping');
+ const finished=JSON.parse(app.storage.get('sparnah-v1'));
+ assert.equal(finished.base.items.find(i=>i.id==='missing').deleted,true);
+ assert.equal(!!finished.base.items.find(i=>i.id==='original').deleted,false);
+ assert.match(app.html(),/data-item="original"/);assert.doesNotMatch(app.html(),/data-item="missing"/);
+ assert.deepEqual(finished.base.settings.enabledStores,['shop','other']);
+});
+
+test('ending an incomplete trip removes only its checked positions and preserves unrelated checked items and settings',async()=>{
+ const app=openApp({today:'2026-10-20',configureFixture(data,model){
+  const outside={id:'outside',title:'Already checked elsewhere',groupId:'outside'};
+  const later={id:'later',title:'Added after this trip began',groupId:'later'};
+  data.catalog.products.push(outside,later);
+  model.base.items.push({id:outside.id,product:outside,qty:1,checked:true});
+  model.base.settings.shoppingLayouts={rewe:{areas:[{id:'other',label:'Mein Bereich',icon:'🛒',color:'#a3a3a3'}],assignments:{original:'other'}}};
+ }});
+ const settings=JSON.parse(app.storage.get('sparnah-v1')).base.settings;
+ await app.click('tab',{tab:'plan'});
+ const day=app.html().match(/data-action="start-shopping" data-store="shop" data-day="([^"]+)"/)[1];
+ await app.click('start-shopping',{store:'shop',day});
+ await app.click('add-product',{id:'later'});
+ await app.click('check',{id:'later'}); // This new checked item was never part of the session.
+ await app.click('check',{id:'original'});
+ await app.click('tab',{tab:'shopping'});
+ assert.match(app.html(),/1 von 2 im Wagen/);assert.match(app.html(),/Rundgang beenden/);
+ await app.click('finish-shopping');
+ const saved=JSON.parse(app.storage.get('sparnah-v1'));
+ assert.equal(saved.shoppingSession,undefined);
+ assert.equal(saved.base.items.find(i=>i.id==='original').deleted,true);
+ for(const id of ['missing','outside','later'])assert.equal(!!saved.base.items.find(i=>i.id===id).deleted,false,id);
+ assert.deepEqual(saved.base.settings,settings);
+ assert.match(app.html(),/data-item="missing"/);assert.match(app.html(),/data-item="outside"/);assert.match(app.html(),/data-item="later"/);
+ assert.doesNotMatch(app.html(),/data-item="original"/);
+ // No active session cannot erase products checked elsewhere.
+ await app.click('finish-shopping');
+ assert.deepEqual(JSON.parse(app.storage.get('sparnah-v1')).base.items,saved.base.items);
+});
+
+test('shopping rows retain a symbol with photos off and show verified photos only when enabled',async()=>{
+ const app=openApp({today:'2026-10-20',configureFixture(data){
+  const p=data.catalog.products.find(p=>p.id==='original');
+  p.image='https://example.com/nutella.jpg';p.imageSourceUrl='https://example.com/nutella';
+  p.imageAlt=p.title;p.emoji='🍫';
+ }});
+ await app.click('tab',{tab:'plan'});
+ const day=app.html().match(/data-action="start-shopping" data-store="shop" data-day="([^"]+)"/)[1];
+ await app.click('start-shopping',{store:'shop',day});
+ assert.match(app.html(),/class="thumb /);assert.match(app.html(),/class="emoji"[^>]*>🍫/);
+ assert.doesNotMatch(app.html(),/<img[^>]*src="https:\/\/example.com\/nutella.jpg"/);
+ app.change({id:'photos',checked:true});
+ assert.match(app.html(),/<img[^>]*src="https:\/\/example.com\/nutella.jpg"/);
+ assert.doesNotMatch(app.html(),/<select|<details|data-action="edit-market"/);
 });
