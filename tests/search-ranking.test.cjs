@@ -84,3 +84,42 @@ test('an explicit weight ranks the exact group ahead of a broader range',()=>{
   assert.ok(!result.items.includes(large));
   assert.deepEqual(S.search(index,'Brand B 800g').items,[large]);
 });
+
+test('global generic juice wishes remain first with a catalogue source filter without claiming retailer stock',()=>{
+  const apple=wish('apfelsaft','Apfelsaft',{subtitle:'Marke egal · 1.000 ml',category:'Getränke',pack:pack(1000,'ml')});
+  const own=item('apple-a','Brand A Apfelsaft',{category:'Getränke',pack:pack(1000,'ml')});
+  const other=item('apple-b','Brand B Apfelsaft',{brand:'Brand B',assortmentStoreId:'b',category:'Getränke',pack:pack(1000,'ml')});
+  const index=S.build([own,other,apple]),before=JSON.stringify(apple);
+  assert.deepEqual(S.search(index,'apfelsaft',{store:'a'}).items,[apple,own]);
+  assert.deepEqual(S.search(index,'apfelsaft',{store:'b'}).items,[apple,other]);
+  assert.deepEqual(S.search(index,'apfelsaft',{store:'no-catalogue'}).items,[apple]);
+  assert.equal(S.search(index,'apfelsaft',{store:'a',limit:1}).items[0],apple);
+  assert.equal(S.search(index,'apfelsaft',{store:'a',category:'Haushalt'}).total,0);
+  assert.equal(apple.assortmentStoreId,undefined);assert.equal(apple.assortmentSourceUrl,undefined);
+  assert.equal(JSON.stringify(apple),before);
+});
+
+test('source filters keep scoped wishes and branded or imported products restricted to their actual source',()=>{
+  const scoped=wish('local-apple','Apfelsaft',{assortmentStoreId:'b',pack:pack(1000,'ml')});
+  const branded=wish('brand-family-apple','Brand B Apfelsaft',{brand:'Brand B',isGroupChoice:true,pack:pack(1000,'ml')});
+  const manufacturer={...wish('manufacturer:apple','Apfelsaft'),pack:pack(1000,'ml')};
+  const imported={...wish('import:apple','Apfelsaft'),pack:pack(1000,'ml')};
+  const exact={...wish('exact-apple','Apfelsaft'),variantId:'exact',pack:pack(1000,'ml')};
+  const index=S.build([scoped,branded,manufacturer,imported,exact]);
+  assert.equal(S.search(index,'apfelsaft',{store:'a'}).total,0);
+  assert.deepEqual(S.search(index,'apfelsaft',{store:'b'}).items,[scoped]);
+  assert.equal(S.search(index,'apfelsaft').total,5);
+});
+
+test('juice brand queries stay specific and explicit pack queries select the right generic wish',()=>{
+  const liter=wish('apfelsaft-1000','Apfelsaft',{subtitle:'Marke egal · 1.000 ml',pack:pack(1000,'ml')});
+  const large=wish('apfelsaft-1500','Apfelsaft',{subtitle:'Marke egal · 1.500 ml',pack:pack(1500,'ml')});
+  const brand=item('apple','Vitagold Apfelsaft',{brand:'Vitagold',pack:pack(1000,'ml')});
+  const other=item('other-apple','Sonnental Apfelsaft',{brand:'Sonnental',assortmentStoreId:'b',pack:pack(1000,'ml')});
+  const index=S.build([brand,other,large,liter]);
+  assert.deepEqual(S.search(index,'Vitagold Apfelsaft',{store:'a'}).items,[brand]);
+  assert.equal(S.search(index,'Sonnental Apfelsaft',{store:'a'}).total,0);
+  assert.deepEqual(S.search(index,'Apfelsaft 1.000ml',{store:'a'}).items,[liter,brand]);
+  assert.deepEqual(S.search(index,'Apfelsaft 1500ml',{store:'a'}).items,[large]);
+  assert.equal(S.search(index,'Apfelsaft 750ml',{store:'a'}).total,0);
+});

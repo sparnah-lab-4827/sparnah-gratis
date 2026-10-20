@@ -11,13 +11,13 @@ function openApp({referencePriceCents=null,originalPrice=399,today="2026-10-19",
  configureFixture(data,model);
  let shared='',planCalls=0,refreshData;
  const storage=new Map([['sparnah-v1',savedModel||JSON.stringify(model)]]),elements=new Map(),handlers={};
- function el(id){if(!elements.has(id))elements.set(id,{id,innerHTML:'',textContent:'',classList:{add(){},remove(){},toggle(){}},addEventListener(){},setAttribute(){},removeAttribute(){},focus(){}});return elements.get(id);}
+ function el(id){if(!elements.has(id))elements.set(id,{id,innerHTML:'',textContent:'',classList:{add(){},remove(){},toggle(){}},addEventListener(){},setAttribute(){},removeAttribute(){},focus(){},showModal(){this.open=true;},close(){this.open=false;}});return elements.get(id);}
  const doc={getElementById:el,addEventListener:(name,fn)=>handlers[name]=fn,visibilityState:'visible'};
  const window={document:doc,addEventListener(){},setInterval(){},scrollTo(){},SparnahVault:{getData:()=>data,getStatus:()=>({}),subscribe(fn){refreshData=fn;}}};
  for(const [key,file] of Object.entries({SparnahShopping:'shopping',SparnahLogos:'logos',SparnahEstimates:'estimates',SparnahStores:'stores',SparnahEngine:'engine',SparnahSearch:'search',SparnahChoices:'choices',SparnahSelection:'selection',SparnahUpdates:'updates',SparnahLeaflets:'leaflets'}))window[key]=require('../site/'+file+'.js');
  window.SparnahEngine={...E,berlinToday:()=>today,optimize(...args){planCalls++;return E.optimize(...args);}};
  vm.runInNewContext(fs.readFileSync(require.resolve('../site/app.js'),'utf8'),{window,document:doc,location:{protocol:'https:'},localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)},crypto:webcrypto,Intl,URL,console,setInterval(){},setTimeout(){},clearTimeout(){},navigator:{share:async data=>{shared=data.text;}}});
- return {planCalls:()=>planCalls,advanceDay:()=>{today=E.addDays(today,1);},refresh:()=>refreshData(data),shared:()=>shared,html:()=>el('main').innerHTML,elementHtml:id=>el(id).innerHTML,storage,product,setValue:(id,value)=>el(id).value=value,submit:id=>handlers.submit({preventDefault(){},target:{id}}),input:target=>handlers.input({target}),change:target=>handlers.change({target:{classList:{contains:()=>false},...target}}),click:async(action,extra={})=>handlers.click({preventDefault(){},target:{closest:()=>({dataset:{action,...extra}})}})};
+ return {planCalls:()=>planCalls,advanceDay:()=>{today=E.addDays(today,1);},refresh:()=>refreshData(data),shared:()=>shared,html:()=>el('main').innerHTML,elementHtml:id=>el(id).innerHTML,confirmImport:()=>el('confirm-import').onclick(),storage,product,setValue:(id,value)=>el(id).value=value,submit:id=>handlers.submit({preventDefault(){},target:{id}}),input:target=>handlers.input({target}),change:target=>handlers.change({target:{classList:{contains:()=>false},...target}}),click:async(action,extra={})=>handlers.click({preventDefault(){},target:{closest:()=>({dataset:{action,...extra}})}})};
 }
 test('normal-price partial plan explains missing prices without the misleading discount failure',async()=>{
  const app=openApp();await app.click('tab',{tab:'plan'});
@@ -336,4 +336,46 @@ test('shopping rows retain a symbol with photos off and show verified photos onl
  app.change({id:'photos',checked:true});
  assert.match(app.html(),/<img[^>]*src="https:\/\/example.com\/nutella.jpg"/);
  assert.doesNotMatch(app.html(),/<select|<details|data-action="edit-market"/);
+});
+
+test('a generated brand-free juice wish can be searched, planned, shopped and restored',async()=>{
+ const options={today:'2026-10-20',configureFixture(data,model){
+  model.base.items=[];
+  const juice={id:'juice-brand',groupId:'juice-brand',variantId:'juice-brand-1l',title:'House Apfelsaft klar',brand:'House',pack:{min:1000,max:1000,unit:'ml'}};
+  data.catalog.products.push(juice);
+  data.catalog.offers.push({id:'juice-price',productId:juice.id,title:juice.title,brand:juice.brand,groupIds:[juice.groupId],variantIds:[juice.variantId],pack:juice.pack,priceCents:149,storeId:'shop',start:'2026-10-20',end:'2026-10-24',verification:'source',sourceUrl:'https://example.com/juice'});
+ }};
+ const app=openApp(options);
+ app.input({id:'search',value:'Apfelsaft'});
+ assert.match(app.elementHtml('suggestions'),/basic:juice-apple/);
+ assert.match(app.elementHtml('suggestions'),/Marke egal/);
+ await app.click('add-product',{id:'basic:juice-apple'});
+ await app.click('tab',{tab:'plan'});
+ assert.match(app.html(),/House Apfelsaft klar/);assert.match(app.html(),/Gesamtpreis/);assert.match(app.html(),/1,49/);
+ const saved=app.storage.get('sparnah-v1');
+ assert.equal(JSON.parse(saved).base.items[0].product.title,'Apfelsaft');
+ const reloaded=openApp({...options,savedModel:saved});
+ await reloaded.click('tab',{tab:'plan'});
+ const day=reloaded.html().match(/data-action="start-shopping" data-store="shop" data-day="([^"]+)"/)[1];
+ await reloaded.click('start-shopping',{store:'shop',day});
+ assert.match(reloaded.html(),/House Apfelsaft klar/);
+ assert.match(reloaded.html(),/data-shopping-item="basic:juice-apple"/);
+});
+
+
+test('a backup keeps a stable basic wish when the catalogue already has an equivalent suggestion',async()=>{
+ const butter=require('../site/choices.js').basicWishes().find(p=>p.id==='basic:butter');
+ const app=openApp({configureFixture(data,model){
+  data.catalog.products.push({id:'butter',title:'Butter',groupId:'butter',brand:'',variantId:null,pack:{min:250,max:250,unit:'g'}});
+  model.base.items=[];
+ }});
+ app.input({id:'search',value:'Butter'});
+ assert.doesNotMatch(app.elementHtml('suggestions'),/data-id="basic:butter"/);
+ const saved={schemaVersion:1,state:{items:[{id:butter.id,product:butter,qty:2}],offers:[]}};
+ app.change({id:'backup-file',files:[{size:500,text:async()=>JSON.stringify(saved)}]});
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.match(app.elementHtml('dialog-content'),/Sicherung zur Liste hinzufügen/);
+ app.confirmImport();
+ const restored=JSON.parse(app.storage.get('sparnah-v1')).base.items[0];
+ assert.equal(restored.id,'basic:butter');assert.equal(restored.qty,2);assert.deepEqual(restored.product,butter);
 });

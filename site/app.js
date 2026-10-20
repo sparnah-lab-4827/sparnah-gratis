@@ -98,7 +98,11 @@
     memoKey='';
     const settings=S.reconcileStores(model.base.settings,C.stores);
     if(JSON.stringify(settings)!==JSON.stringify(model.base.settings)){model.base.settings=settings;persist();}
-    searchIndex=S.build(C.products,assortment.products,model.base.items.filter(i=>!i.deleted).map(i=>i.product));
+    const existingProducts=C.products.concat(assortment.products,model.base.items.filter(i=>!i.deleted).map(i=>i.product));
+    searchIndex=S.build(existingProducts,Choices.basicWishes(existingProducts));
+    // Keep stable wish IDs restorable even when an equivalent catalogue wish
+    // replaces their search suggestion. Saved choices retain their own snapshot.
+    for(const wish of Choices.basicWishes())if(!searchIndex.byId.has(wish.id))searchIndex.byId.set(wish.id,wish);
     priceGuide=window.SparnahEstimates?.createEstimator(searchIndex.products);
     resolveChoice=Choices.createResolver(searchIndex.products);
     selectedProductCache=new WeakMap();searchMemo=null;

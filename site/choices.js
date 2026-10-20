@@ -89,11 +89,33 @@
     if (product.groupSelection || product.isGroupChoice || !brand || !title || !packKey(product.pack) || /\b(?:oder|verschiedene|versch)\b|\//.test(title)) return null;
     return {kind: 'same-product', group: `choice:same:${key(brand)}:${key(title)}:${packKey(product.pack)}:${dietaryKey(product)}`, description: `Günstigster erfasster Preis derselben Marke und Produktausführung · ${packLabel(product.pack)}.`};
   }
+  function juiceProfile(title, product) {
+    if (product.pack.unit !== 'ml') return null;
+    const plain = title.replace(/^bio /, '');
+    const fruit = plain.match(/\b(apfelsaft|orangensaft|traubensaft)\b/);
+    if (!fruit) return null;
+    const rest = plain.replace(fruit[0], '').replace(/\b100\s*%/g, '').trim();
+    const concentratePattern = new RegExp(`\\baus (?:${fruit[1]})?konzentrat\\b`,'g');
+    const direct = /\bdirektsaft\b/.test(rest), concentrate = new RegExp(concentratePattern.source).test(rest);
+    const cloudy = /\bnaturtrub(?:e[rmns]?)?\b/.test(rest), clear = /\bklar(?:e[rmns]?)?\b/.test(rest);
+    if (direct && concentrate || cloudy && clear) return null;
+    // All text must describe pure juice. Nectar, spritzers, mixes, light drinks,
+    // flavours and unidentified qualifications must never acquire a juice group.
+    const remainder = rest.replace(/\bdirektsaft\b/g, '').replace(concentratePattern, '')
+      .replace(/\b(?:naturtrub|klar)(?:e[rmns]?)?\b/g, '').replace(/\s+/g, '');
+    if (remainder) return null;
+    const clarity = cloudy?'naturtrub':clear?'klar':null, processing = direct?'direktsaft':concentrate?'aus konzentrat':null;
+    // Retain earlier one-qualifier group keys for already saved choices.
+    const style = product.juiceStyleAny === true ? 'any' : [clarity,processing].filter(Boolean).join(':') || 'unspecified';
+    return {fruit:fruit[1],style};
+  }
   function alternativeProfile(product, brands) {
     if (!packKey(product.pack) || !['g','ml'].includes(product.pack.unit)) return null;
     const title = withoutBrand(product, brands).replace(/(\d),(\d)/g,'$1.$2').replace(/[,-]+/g,' ').replace(/\s+/g,' ').trim();
     if (/\b(?:oder|verschiedene|sortiment)\b|\//.test(title)) return null;
     let family=null,label=null;
+    const juice = juiceProfile(title, product);
+    if (juice) { family=`juice:${juice.fruit}:${juice.style}`;label=juice.fruit; }
     // Only the spread itself: the brand also sells biscuits, ice cream and snacks.
     if (/^(?:ferrero )?nutella(?: classic| klassisch)?$/.test(title) || /^(?:bio )?(?:nuss nougat ?creme|nuss nugat ?creme|haselnuss nougat ?creme)$/.test(title)) {
       family='hazelnut-cocoa-spread';label='Nuss-Nougat-Creme';
@@ -122,7 +144,6 @@
       [/^tomaten ?ketchup$/, ()=>'ketchup:tomato'],
       [/^(sonnenblumenol|rapsol|olivenol)(?: (nativ extra|nativ|kaltgepresst|raffiniert))?$/, m=>'oil:'+m[1]+':'+(m[2]||'unspecified')],
       [/^(?:naturliches )?mineralwasser (classic|klassik|medium|naturell|still)$/, m=>'water:'+({classic:'sparkling',klassik:'sparkling',naturell:'still'}[m[1]]||m[1])],
-      [/^(apfelsaft|orangensaft|traubensaft)(?: (direktsaft|aus konzentrat|naturtrub|klar))?$/, m=>'juice:'+m[1]+':'+(m[2]||'unspecified')],
       [/^(haferdrink|sojadrink|mandeldrink)(?: (natur|ungesusst|ohne zucker|barista))?$/, m=>'plantdrink:'+m[1]+':'+(m[2]||'unspecified')],
       [/^(apfelessig|weissweinessig|rotweinessig)$/, m=>'vinegar:'+m[1]],
     ];
@@ -140,7 +161,7 @@
     if(family && /^(?:hazelnut|pasta:|rice:)/.test(family) && product.pack.unit!=='g')return null;
     if(!family)return null;
     const basis=product.pack.unit==='ml'?'Literpreis':'Kilopreis';
-    return {kind:'alternative',group:`choice:alternative:${family}:${product.pack.unit}:${dietaryKey(product)}`,description:`${label} verschiedener Marken, einschließlich Eigenmarken: günstigster ${basis}. Ähnliche Packungen (bis zu 20 % kleiner oder größer als ${packLabel(product.pack)}), gleiche Anzahl Packungen. Tatsächliche Größe, ${basis} und Kassenbetrag werden angezeigt; besondere Ernährungsangaben bleiben erhalten.`};
+    return {kind:'alternative',...(juice?{juice}:{}),group:`choice:alternative:${family}:${product.pack.unit}:${dietaryKey(product)}`,description:`${label} verschiedener Marken, einschließlich Eigenmarken: günstigster ${basis}. Ähnliche Packungen (bis zu 20 % kleiner oder größer als ${packLabel(product.pack)}), gleiche Anzahl Packungen. Tatsächliche Größe, ${basis} und Kassenbetrag werden angezeigt; besondere Ernährungsangaben bleiben erhalten.`};
   }
   function profiles(product, brands) {
     if (!product || product.packUnconfirmed || !packKey(product.pack)) return [];
@@ -157,6 +178,7 @@
   }
   function profileGroups(product, brands) { return profiles(product, brands).flatMap(profile => {
         if (profile.kind === 'butter' && profile.style !== 'any') return [profile.group, profile.group.replace(`:${profile.style}:`, ':any:')];
+        if (profile.juice && profile.juice.style !== 'any') return [profile.group, `choice:alternative:juice:${profile.juice.fruit}:any:ml:${dietaryKey(product)}`];
         if (profile.kind !== 'milk') return [profile.group];
         // Unspecified milk processing/pasture wishes may also use a more specific matching milk.
         const groups = [profile.group];
@@ -164,6 +186,70 @@
         if (profile.grazing !== 'any') for (const group of [...groups]) groups.push(group.replace(':pasture:', ':any:'));
         return groups;
       }); }
+  function basicWishes(products = []) {
+    const brands = knownBrands(products);
+    // These are shopping wishes with explicit sizes, never price or stock claims.
+    // IDs and order depend on product meaning, not changing retailer catalogues.
+    const definitions = [
+      ['butter','Butter',250,'g','Milchprodukte & Kühlung','🧈'],
+      ['milk-15','Milch 1,5 % Fett',1000,'ml','Milchprodukte & Kühlung','🥛'],
+      ['milk-35','Milch 3,5 % Fett',1000,'ml','Milchprodukte & Kühlung','🥛'],
+      ['flour-wheat-405','Weizenmehl Type 405',1000,'g','Vorrat & Grundnahrungsmittel','🥫'],
+      ['flour-wheat-550','Weizenmehl Type 550',1000,'g','Vorrat & Grundnahrungsmittel','🥫'],
+      ['flour-wheat-1050','Weizenmehl Type 1050',1000,'g','Vorrat & Grundnahrungsmittel','🥫'],
+      ['flour-spelt-630','Dinkelmehl Type 630',1000,'g','Vorrat & Grundnahrungsmittel','🥫'],
+      ['flour-rye-1150','Roggenmehl Type 1150',1000,'g','Vorrat & Grundnahrungsmittel','🥫'],
+      ['sugar-crystal','Kristallzucker',1000,'g','Vorrat & Grundnahrungsmittel','🥫'],
+      ['sugar-powder','Puderzucker',250,'g','Vorrat & Grundnahrungsmittel','🥫'],
+      ['oats-fine','Haferflocken zart',500,'g','Vorrat & Grundnahrungsmittel','🥣'],
+      ['oats-coarse','Haferflocken kernig',500,'g','Vorrat & Grundnahrungsmittel','🥣'],
+      ['yogurt-15','Naturjoghurt 1,5 % Fett',500,'g','Milchprodukte & Kühlung','🥛'],
+      ['yogurt-35','Naturjoghurt 3,5 % Fett',500,'g','Milchprodukte & Kühlung','🥛'],
+      ['quark-lean','Magerquark',500,'g','Milchprodukte & Kühlung','🥛'],
+      ['quark-20','Speisequark 20 % Fett i. Tr.',500,'g','Milchprodukte & Kühlung','🥛'],
+      ['quark-40','Speisequark 40 % Fett i. Tr.',500,'g','Milchprodukte & Kühlung','🥛'],
+      ['skyr-natural','Skyr natur',500,'g','Milchprodukte & Kühlung','🥛'],
+      ['pasta-spaghetti','Spaghetti',500,'g','Vorrat & Grundnahrungsmittel','🍝'],
+      ['pasta-penne','Penne',500,'g','Vorrat & Grundnahrungsmittel','🍝'],
+      ['pasta-fusilli','Fusilli',500,'g','Vorrat & Grundnahrungsmittel','🍝'],
+      ['pasta-farfalle','Farfalle',500,'g','Vorrat & Grundnahrungsmittel','🍝'],
+      ['rice-basmati','Basmati Reis',1000,'g','Vorrat & Grundnahrungsmittel','🍚'],
+      ['rice-jasmine','Jasmin Reis',1000,'g','Vorrat & Grundnahrungsmittel','🍚'],
+      ['rice-parboiled','Parboiled Reis',1000,'g','Vorrat & Grundnahrungsmittel','🍚'],
+      ['rice-wholegrain','Vollkornreis',1000,'g','Vorrat & Grundnahrungsmittel','🍚'],
+      ['oil-rapeseed','Rapsöl',1000,'ml','Vorrat & Grundnahrungsmittel','🫒'],
+      ['oil-sunflower','Sonnenblumenöl',1000,'ml','Vorrat & Grundnahrungsmittel','🫒'],
+      ['oil-olive-extra','Olivenöl nativ extra',500,'ml','Vorrat & Grundnahrungsmittel','🫒'],
+      ['juice-apple','Apfelsaft',1000,'ml','Getränke','🧃',true],
+      ['juice-orange','Orangensaft',1000,'ml','Getränke','🧃',true],
+      ['juice-grape','Traubensaft',1000,'ml','Getränke','🧃',true],
+      ['water-still','Mineralwasser still',1500,'ml','Getränke','💧'],
+      ['water-medium','Mineralwasser medium',1500,'ml','Getränke','💧'],
+      ['water-sparkling','Mineralwasser classic',1500,'ml','Getränke','💧'],
+      ['tomatoes-strained','Passierte Tomaten',500,'g','Vorrat & Grundnahrungsmittel','🥫'],
+      ['tomatoes-chopped','Gehackte Tomaten',400,'g','Vorrat & Grundnahrungsmittel','🥫'],
+      ['tomato-paste','Tomatenmark',200,'g','Vorrat & Grundnahrungsmittel','🥫'],
+      ['lentils-red','Rote Linsen',500,'g','Vorrat & Grundnahrungsmittel','🥫'],
+      ['coffee-ground','Kaffee gemahlen',500,'g','Vorrat & Grundnahrungsmittel','☕']
+    ];
+    const existing = new Set();
+    for (const p of products) {
+      if (!p || p.brand || p.variantId || !packKey(p.pack)) continue;
+      // Only suppress a wish when the retained product can actually use the
+      // profile groups annotated on offers (or an explicitly supported legacy group).
+      for (const profile of profiles(p,brands)) {
+        if (p.groupId === profile.group || ['butter','milch-35'].includes(p.groupId)) existing.add(`${profile.group}|${packKey(p.pack)}`);
+      }
+      if (p.groupId) existing.add(`${p.groupId}|${packKey(p.pack)}`);
+    }
+    return definitions.flatMap(([id,title,size,unit,category,emoji,juiceStyleAny])=>{
+      const p={id:'basic:'+id,title,brand:'',variantId:null,isGroupChoice:true,pack:{min:size,max:size,unit},category,emoji,
+        ...(juiceStyleAny?{juiceStyleAny:true}:{}),subtitle:`Marke egal · ${juiceStyleAny?'Art egal · ':''}${packLabel({min:size,unit})}`};
+      const profile=profiles(p,brands)[0];
+      if (!profile || existing.has(`${profile.group}|${packKey(p.pack)}`)) return [];
+      return [{...p,groupId:profile.group}];
+    });
+  }
   function basicGroups(product, products, brands) {
     // Broad list wishes name a food, not a particular brand or cultivar.
     // Keep those wishes separate from exact catalogue products and all opt-in substitutions.
@@ -222,5 +308,5 @@
       return {...offer, groupIds: [...new Set([...(offer.groupIds || []), ...additions])]};
     });
   }
-  return { getChoice, createResolver, annotateOffers };
+  return { getChoice, createResolver, annotateOffers, basicWishes };
 });
