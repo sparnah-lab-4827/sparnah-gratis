@@ -76,11 +76,48 @@ test('brand snapshots invalidate on rebuild and callers cannot mutate cached off
 });
 
 test('brand filter cache is bounded and does not accumulate per-query history',()=>{
- let calls=0;const engine={overlapsWeek(o,w){calls++;return E.overlapsWeek(o,w);},offerUsable:E.offerUsable};
+ let calls=0;const engine={daysOfWeek:E.daysOfWeek,validOn(o,day){calls++;return E.validOn(o,day);},offerUsable:E.offerUsable};
  const snapshot=S.createBrandSearch(S.build(products),offers),options={engine,weekStart:'2026-10-19'};
  snapshot.brandSuggestions('a',options);const first=calls;
  for(let i=0;i<100;i++)snapshot.brandSuggestions('query'+i,options);
  snapshot.brandOffers('acme',options);assert.equal(calls,first);
  for(let i=1;i<=8;i++)snapshot.brandSuggestions('',{engine,weekStart:E.addDays('2026-10-19',i*7)});
  const evicted=calls;snapshot.brandSuggestions('',options);assert.ok(calls>evicted);
+});
+
+test('brand offers and counts exclude expired days while retaining today and upcoming deals',()=>{
+ const data=[
+  offer('expired','Acme Butter',{end:'2026-10-22'}),
+  offer('today','Acme Butter',{start:'2026-10-23',end:'2026-10-23'}),
+  offer('tomorrow','Acme Butter',{start:'2026-10-24',end:'2026-10-24'}),
+  offer('old-start-only','Acme Butter',{start:'2026-10-22',end:null}),
+  offer('today-start-only','Acme Butter',{start:'2026-10-23',end:null}),
+  offer('next-week','Acme Butter',{start:'2026-10-26',end:'2026-10-31'}),
+  offer('other-store','Acme Butter',{storeId:'b'}),
+  offer('card-only','Acme Butter',{requiresCard:true})
+ ];
+ const index=S.build(products),snapshot=S.createBrandSearch(index,data);
+ const options={engine:E,weekStart:'2026-10-19',notBefore:'2026-10-23',storeIds:['a']};
+ const expected=['today','today-start-only','tomorrow'];
+ assert.deepEqual(S.brandOffers(index,data,'acme',options).map(o=>o.id).sort(),expected);
+ assert.deepEqual(snapshot.brandOffers('acme',options).map(o=>o.id).sort(),expected);
+ for(const suggestions of [S.brandSuggestions(index,data,'acme',options),snapshot.brandSuggestions('acme',options)]){
+  assert.equal(suggestions.find(row=>row.key==='acme').count,3);
+ }
+});
+
+test('brand snapshots advance the date inside one week without reusing yesterday counts',()=>{
+ const data=[
+  offer('thursday','Acme Butter',{start:'2026-10-22',end:'2026-10-22'}),
+  offer('friday','Acme Butter',{start:'2026-10-23',end:'2026-10-23'}),
+  offer('saturday','Acme Butter',{start:'2026-10-24',end:'2026-10-24'})
+ ];
+ const index=S.build(products),snapshot=S.createBrandSearch(index,data),options={engine:E,weekStart:'2026-10-19'};
+ for(const [notBefore,count]of [[undefined,3],['2026-10-22',3],['2026-10-23',2],['2026-10-24',1],['2026-10-25',0],['2026-10-23',2]]){
+  const activeOptions={...options,...(notBefore?{notBefore}:{})};
+  assert.equal(snapshot.brandSuggestions('acme',activeOptions).find(row=>row.key==='acme').count,count);
+  assert.equal(snapshot.brandOffers('acme',activeOptions).length,count);
+  assert.deepEqual(snapshot.brandOffers('acme',activeOptions),S.brandOffers(index,data,'acme',activeOptions));
+  assert.deepEqual(snapshot.brandSuggestions('acme',activeOptions),S.brandSuggestions(index,data,'acme',activeOptions));
+ }
 });

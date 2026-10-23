@@ -92,6 +92,20 @@
     const found=frostaMealIdentities.find(([,size,names])=>size===product.pack.min&&names.includes(title));
     return found?found[0]+':'+packKey(product.pack):null;
   }
+  function nutellaSpreadIdentity(product, brands) {
+    if (brandOf(product,brands)!=='ferrero' || !packKey(product.pack) || product.pack.unit!=='g' ||
+        product.packUnconfirmed || product.groupSelection || product.isGroupChoice ||
+        dietaryKey(product)!=='ordinary:unspecified:ordinary:ordinary:ordinary') return null;
+    if (product.line && !['standard','classic','klassisch','original'].includes(normalize(product.line))) return null;
+    const named=normalize(product.title);
+    // Keep multipacks, bonus jars and any conflicting printed size out of exact identity.
+    if (/\d\s*[x×+]/.test(named)) return null;
+    const sizes=[...named.matchAll(/\b(\d+(?:[.,]\d+)?)\s*(kg|g)\b/g)];
+    if (sizes.some(m=>Number(m[1].replace(',','.'))*(m[2]==='kg'?1000:1)!==product.pack.min)) return null;
+    const title=withoutBrand(product,brands);
+    // This is only the original spread, never the brand's biscuits, bars or plant-based jars.
+    return /^nutella(?: classic| klassisch| original)?$/.test(title)?'nutella-original:'+packKey(product.pack):null;
+  }
   function frostaProfile(product, brands) {
     if (!packKey(product.pack) || product.pack.unit !== 'g' || !/\bfrosta\b/.test(normalize(product.brand) + ' ' + normalize(product.title))) return null;
     const line = normalize(product.line), group = normalize(product.groupId), title = normalize(product.title);
@@ -436,12 +450,18 @@
   }
   function annotateOffers(offers, products = []) {
     const byId = new Map(products.map(p => [p.id, p])), brands = knownBrands(products);
-    const frostaAliases=new Map();
+    const frostaAliases=new Map(),nutellaAliases=new Map();
     for (const product of products) {
       const identity=frostaMealIdentity(product,brands);
-      if (!identity) continue;
-      if (!frostaAliases.has(identity)) frostaAliases.set(identity,[]);
-      frostaAliases.get(identity).push(product);
+      if (identity) {
+        if (!frostaAliases.has(identity)) frostaAliases.set(identity,[]);
+        frostaAliases.get(identity).push(product);
+      }
+      const nutellaIdentity=nutellaSpreadIdentity(product,brands);
+      if (nutellaIdentity) {
+        if (!nutellaAliases.has(nutellaIdentity)) nutellaAliases.set(nutellaIdentity,[]);
+        nutellaAliases.get(nutellaIdentity).push(product);
+      }
     }
     const basics = products.filter(p => !p.variantId && !p.brand &&
       ['aepfel','nudeln','reis','joghurt','butter','milch-35'].includes(p.groupId));
@@ -456,15 +476,18 @@
       for (const field of ['paperLayers','paperTotalSheets','subtitle']) if (!Object.hasOwn(offer,field)) delete candidate[field];
       const frostaIdentity=frostaMealIdentity(candidate,brands);
       const linkedFrosta=frostaIdentity?frostaAliases.get(frostaIdentity)||[]:[];
+      const nutellaIdentity=nutellaSpreadIdentity(candidate,brands);
+      const linkedNutella=nutellaIdentity?nutellaAliases.get(nutellaIdentity)||[]:[];
       const candidateGroups=profileGroups(candidate, brands);
       const additions = basicGroups(candidate, basics, brands,candidateGroups,basicProfiles).concat(candidateGroups,
-        frostaIdentity?['frosta-meals','frosta-ready-meals',...linkedFrosta.map(p=>p.groupId).filter(Boolean)]:[]);
+        frostaIdentity?['frosta-meals','frosta-ready-meals',...linkedFrosta.map(p=>p.groupId).filter(Boolean)]:[],
+        linkedNutella.map(p=>p.groupId).filter(Boolean));
       if (!additions.length) return offer;
       const manufacturer = manufacturerDefinition(candidate, brands);
       return {...offer, groupIds: [...new Set([...(offer.groupIds || []), ...additions])],
-        ...(manufacturer||frostaIdentity?{variantIds:[...new Set([...(offer.variantIds||[]),
+        ...(manufacturer||frostaIdentity||linkedNutella.length?{variantIds:[...new Set([...(offer.variantIds||[]),
           ...(manufacturer?['manufacturer:frosch:'+manufacturer[0]]:[]),
-          ...linkedFrosta.map(p=>p.variantId).filter(Boolean)])]}:{})};
+          ...linkedFrosta.map(p=>p.variantId).filter(Boolean),...linkedNutella.map(p=>p.variantId).filter(Boolean)])]}:{})};
     });
   }
   return { getChoice, createResolver, annotateOffers, basicWishes, householdWishes, referenceProducts };

@@ -1,6 +1,35 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),{webcrypto}=require('node:crypto');
 const E=require('../site/engine.js');
+test('expired promotions are absent from offers and brands while a live offer reaches the list',async()=>{
+ const app=openApp({today:'2026-10-23',configureFixture(data,model){
+  const p=data.catalog.products[0],base=data.catalog.offers[0];
+  data.catalog.offers=[
+   {...base,id:'expired',title:'Expired Nutella',priceKind:'promotion',priceCents:199,start:'2026-10-19',end:'2026-10-22'},
+   {...base,id:'live',title:'Live Nutella',priceKind:'promotion',storeId:'other',priceCents:299,start:'2026-10-23',end:'2026-10-24'}
+  ];
+  model.base.items=[];model.base.settings.enabledStores=['shop','other'];
+ }});
+ await app.click('tab',{tab:'offers'});
+ assert.match(app.html(),/Live Nutella/);assert.doesNotMatch(app.html(),/Expired Nutella/);
+ assert.doesNotMatch(app.html(),/data-value="shop"/);
+ await app.click('tab',{tab:'brands'});app.input({id:'brand-search',value:'Ferrero'});
+ assert.match(app.elementHtml('brand-content'),/Live Nutella/);
+ assert.doesNotMatch(app.elementHtml('brand-content'),/Expired Nutella/);
+ await app.click('add-product',{id:'original'});await app.click('tab',{tab:'list'});
+ assert.match(bestComparison(app),/Kaufland/);assert.match(bestComparison(app),/2,99/);
+ assert.doesNotMatch(bestComparison(app),/1,99/);
+ app.advanceDay();app.advanceDay();await app.click('tab',{tab:'offers'});
+ assert.doesNotMatch(app.html(),/Live Nutella|Expired Nutella/);
+});
+
+test('a checked list item can still be removed directly',async()=>{
+ const app=openApp();await app.click('check',{id:'original'});
+ assert.match(app.html(),/data-action="remove-item" data-id="original"/);
+ await app.click('remove-item',{id:'original'});
+ assert.doesNotMatch(app.html(),/data-item="original"/);
+ assert.match(app.html(),/data-item="missing"/);
+});
 function openApp({referencePriceCents=null,originalPrice=399,today="2026-10-19",missingProduct=null,savedModel=null,configureFixture=()=>{}}={}){
  const product={id:'original',groupId:'original',variantId:'original450',title:'Nutella',brand:'Ferrero',pack:{min:450,max:450,unit:'g'}};
  const alternative={id:'own',groupId:'own',variantId:'own400',title:'House Nuss-Nougat-Creme',brand:'House',pack:{min:400,max:400,unit:'g'}};
@@ -65,13 +94,13 @@ test('missing competitor prices cannot present one known price or an estimate as
   competingPrice(data,model);data.catalog.offers=data.catalog.offers.filter(o=>o.id!=='competing');
  }});
  assert.match(bestComparison(app),/Erfasster Preis/);assert.doesNotMatch(bestComparison(app),/Günstigster/);
- assert.match(app.html(),/<summary>Kaufland: Preis offen<\/summary>/);
+ assert.match(app.html(),/Kaufland: Preis offen/);
  assert.match(app.html(),/Fehlende Preise bedeuten weder teurer noch nicht erhältlich/);
  const missing=openApp({today:'2026-10-20',originalPrice:null,missingProduct:{id:'missing',title:'Butter'},configureFixture(data,model){
   model.base.settings.enabledStores=['shop','other'];
  }});
  assert.equal(bestComparison(missing),'');assert.match(missing.html(),/Geschätzt ca./);
- assert.match(missing.html(),/<summary>REWE, Kaufland: Preis offen<\/summary>/);
+ assert.match(missing.html(),/REWE, Kaufland: Preis offen/);
 });
 test('comparison refreshes for store subscriptions, validity dates, quantities and catalog replacements',async()=>{
  const app=openApp({configureFixture:competingPrice});
@@ -304,7 +333,7 @@ test('changing an already checked quantity requires checking it again before sho
 test('mobile navigation keeps the plan directly accessible and moves setup behind the gear',async()=>{
  const app=openApp();
  const nav=()=>app.elementHtml('bottom-nav');
- assert.equal((nav().match(/class="nav-item/g)||[]).length,5);
+ assert.equal((nav().match(/class="nav-item/g)||[]).length,3);
  assert.match(nav(),/data-tab="plan"/);assert.doesNotMatch(nav(),/data-tab="stores"|data-tab="settings"/);
  assert.match(app.elementHtml('header'),/aria-label="Einstellungen und Händlerauswahl"/);
  await app.click('tab',{tab:'plan'});

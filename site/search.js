@@ -66,15 +66,17 @@
       return words.some((_,start)=>terms.every((t,i)=>i===terms.length-1&&t.length>=2?words[start+i]?.startsWith(t):words[start+i]===t));
     });
   }
-  function brandOffers(index,offers,query,{engine,weekStart,storeIds,storeId='all'}){
-    return offers.filter(o=>(!storeIds||storeIds.includes(o.storeId))&&(storeId==='all'||o.storeId===storeId)&&engine.overlapsWeek(o,weekStart)&&engine.offerUsable(o,Math.max(1,o.minQty||1))&&brandMatches(o,index,query)).sort((a,b)=>a.storeId.localeCompare(b.storeId)||a.title.localeCompare(b.title,'de'));
+  function brandOffers(index,offers,query,{engine,weekStart,notBefore=weekStart,storeIds,storeId='all'}){
+    const days=engine.daysOfWeek(weekStart).filter(day=>day>=notBefore);
+    return offers.filter(o=>(!storeIds||storeIds.includes(o.storeId))&&(storeId==='all'||o.storeId===storeId)&&days.some(day=>engine.validOn(o,day))&&engine.offerUsable(o,Math.max(1,o.minQty||1))&&brandMatches(o,index,query)).sort((a,b)=>a.storeId.localeCompare(b.storeId)||a.title.localeCompare(b.title,'de'));
   }
-  function brandSuggestions(index,offers,query,{engine,weekStart,storeIds,storeId='all',limit=12}){
+  function brandSuggestions(index,offers,query,{engine,weekStart,notBefore=weekStart,storeIds,storeId='all',limit=12}){
     const names=new Map(),counts=new Map(),q=brandKey(query);
+    const days=engine.daysOfWeek(weekStart).filter(day=>day>=notBefore);
     for(const name of index.brands){const key=brandKey(name);if(key&&!names.has(key))names.set(key,name);}
     for(const offer of offers)for(const name of offerBrands(offer,index)){
       const key=brandKey(name);if(!names.has(key))names.set(key,name);
-      if((!storeIds||storeIds.includes(offer.storeId))&&(storeId==='all'||storeId===offer.storeId)&&engine.overlapsWeek(offer,weekStart)&&engine.offerUsable(offer,Math.max(1,offer.minQty||1)))counts.set(key,(counts.get(key)||0)+1);
+      if((!storeIds||storeIds.includes(offer.storeId))&&(storeId==='all'||storeId===offer.storeId)&&days.some(day=>engine.validOn(offer,day))&&engine.offerUsable(offer,Math.max(1,offer.minQty||1)))counts.set(key,(counts.get(key)||0)+1);
     }
     return [...names].filter(([key])=>!q||key.includes(q)).map(([key,name])=>({key,name,count:counts.get(key)||0})).sort((a,b)=>Number(b.key===q)-Number(a.key===q)||Number(b.key.startsWith(q))-Number(a.key.startsWith(q))||b.count-a.count||a.name.localeCompare(b.name,'de')).slice(0,limit);
   }
@@ -93,17 +95,18 @@
       return {offer:copyOffer(original),brands};
     });
     const byEngine=new WeakMap();
-    function context({engine,weekStart,storeIds,storeId='all'}){
+    function context({engine,weekStart,notBefore=weekStart,storeIds,storeId='all'}){
       let cache=byEngine.get(engine);if(!cache){cache=new Map();byEngine.set(engine,cache);}
-      const key=JSON.stringify([weekStart,storeIds||null,storeId]);
+      const key=JSON.stringify([weekStart,notBefore,storeIds||null,storeId]);
       if(cache.has(key)){
         const value=cache.get(key);cache.delete(key);cache.set(key,value);return value;
       }
       const enabled=storeIds?new Set(storeIds):null,eligible=[],counts=new Map();
+      const days=engine.daysOfWeek(weekStart).filter(day=>day>=notBefore);
       for(const row of rows){
         const o=row.offer;
         if(enabled&&!enabled.has(o.storeId)||(storeId!=='all'&&storeId!==o.storeId)||
-          !engine.overlapsWeek(o,weekStart)||!engine.offerUsable(o,Math.max(1,o.minQty||1)))continue;
+          !days.some(day=>engine.validOn(o,day))||!engine.offerUsable(o,Math.max(1,o.minQty||1)))continue;
         eligible.push(row);
         for(const {key}of row.brands)counts.set(key,(counts.get(key)||0)+1);
       }
